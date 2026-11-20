@@ -78,7 +78,11 @@ and `run [--seconds N]`. `list` shows the queue in order; `#` is the engine id a
   `remove_torrents`, `move_torrent`, `move_torrent_by`, `set_max_active`,
   `set_limits`, `list_files`, `set_file_priority`, `list_trackers`,
   `list_peers`, `check_for_updates`, `open_external`, plus `engine_init` and
-  `set_download_dir` for startup.
+  `set_download_dir` for startup, and the folder/power group:
+  `default_download_folder`, `validate_download_dir`, `pick_directory`,
+  `pick_torrent_file`, `preview_torrent_file`, `first_directory`, `open_folder`,
+  `set_torrent_output_dir`, `get_power_status`, `set_power_settings`,
+  `cancel_power_off`.
 - Settings: download folder, limits, maximum active downloads (default 1),
   update check toggle, theme, language. Persisted in the webview's
   `localStorage`.
@@ -89,6 +93,36 @@ and `run [--seconds N]`. `list` shows the queue in order; `#` is the engine id a
 - Opening a link (`open_external`) uses the system browser through the Tauri
   opener plugin and accepts `http(s)` only.
 - `brickman-desktop.exe <file.torrent>` adds the torrent on startup.
+
+### Download folder
+
+- The add dialog has a folder field with a native "Browse…" picker
+  (`tauri-plugin-dialog`), a dropdown of the last five folders, a "create a
+  sub folder named after the torrent" checkbox (on for multi-file torrents, off
+  for single-file ones), "remember as the default folder" and "start paused".
+- The folder is validated **before** the download starts: the folder is created
+  if missing and a probe file is written and removed, so a read-only or missing
+  drive gives a human message in the dialog instead of a failed download later.
+- Settings keep the default folder, the recent list and the sub folder default.
+  The row context menu offers "Open folder" and "Change download folder…"; the
+  latter is enabled only for paused / queued / stopped torrents and warns that
+  the already downloaded files will be moved.
+
+### Power actions
+
+- Settings → "When every download is complete": `nothing` (default), `sleep`,
+  `hibernate`, `shut down`, `force shut down` (the last one warns that open
+  programs will lose unsaved data), with a delay of 5–600 s (default 60).
+- The trigger is "all downloads reached 100 %"; seeding is not counted. It never
+  fires on startup with an empty or already finished list, and it is cancelled
+  automatically when a torrent is added or resumed, or manually from the
+  countdown banner.
+- Commands per OS: `shutdown /s /t 0`, `shutdown /s /f /t 0`, `shutdown /h`,
+  and `SetSuspendState` for sleep on Windows; `systemctl poweroff [-f]`,
+  `hibernate` and `suspend` on Linux.
+- `BRICKMAN_POWER_DRYRUN=1` logs `DRYRUN: would run …` to
+  `<data-dir>\power.log` instead of executing anything — this is how the
+  feature is tested without turning the machine off.
 
 ### Known simplifications
 
@@ -104,6 +138,12 @@ and `run [--seconds N]`. `list` shows the queue in order; `#` is the engine id a
 - **Seeds/peers totals** show connected counts only (the engine does not expose
   swarm totals), so the table shows the same number twice.
 - Labels and comments are empty: neither exists in the core.
+- **Changing the download folder is a re-add.** librqbit 9.1.0 has no API to
+  change `output_folder` of a live torrent (`ManagedTorrentShared::options` is
+  `pub(crate)` inside an immutable `Arc`), so the core stops the torrent, moves
+  the downloaded files itself (rename, falling back to copy+remove across
+  volumes) and re-adds the same bytes with the same engine id and the previous
+  file selection. Progress and queue position survive.
 
 ## Remaining (not implemented)
 
@@ -117,7 +157,10 @@ and `run [--seconds N]`. `list` shows the queue in order; `#` is the engine id a
 - **Signed updates**: a signed update feed and in-app installer. Today the check
   only reports that a release exists and opens the release page.
 - Drag and drop of `.torrent` files onto the window (dragging rows to reorder
-  the queue is implemented).
+  the queue is implemented). Dropping a folder onto the add dialog is prepared
+  in the dialog module but the listener is not wired: the native
+  `onDragDropEvent` competes with the HTML5 drag and drop used by the table, so
+  it needs a check in the built app first.
 
 ## Legal
 

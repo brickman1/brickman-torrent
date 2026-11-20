@@ -1,0 +1,14 @@
+[package]
+name = "brickman-cli"
+description = "Command line front-end for Brickman Torrent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "brickman-torrent"
+path = "src/main.rs"
+
+[dependencies]
+brickman-core.workspace = true

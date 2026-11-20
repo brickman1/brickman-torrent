@@ -1,0 +1,16 @@
+[package]
+name = "brickman-core"
+description = "Engine wrapper and download queue for Brickman Torrent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bytes.workspace = true
+librqbit.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+*.tmp
+*.log
+
+# Local test scratch data (state lives in %APPDATA%\BrickmanTorrent)
+/local-data/

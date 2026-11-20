@@ -1,7 +1,7 @@
 //! The downloader: a synchronous facade over a private tokio runtime running
 //! the librqbit engine, plus the persistent download queue.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,10 +16,12 @@ use librqbit::{
 };
 
 use crate::error::Error;
-use crate::model::{Source, TorrentId, TorrentState, TorrentView};
+use crate::model::{
+    FileView, PeerView, SessionView, Source, TorrentId, TorrentState, TorrentView, TrackerView,
+};
 use crate::paths;
 use crate::scheduler::{self, QueueItem};
-use crate::state::{State, TorrentEntry};
+use crate::state::{State, TorrentEntry, now_ms};
 
 /// How long to wait for magnet metadata by default.
 pub const DEFAULT_METADATA_TIMEOUT: Duration = Duration::from_secs(60);
@@ -81,6 +83,9 @@ pub struct Downloader {
     session: Arc<Session>,
     state_path: PathBuf,
     state: Mutex<State>,
+    /// Serializes state file writes so two parallel commands cannot interleave
+    /// their snapshots (the UI sends several commands at once).
+    save_lock: Mutex<()>,
     download_dir: PathBuf,
     closed: AtomicBool,
 }
@@ -126,6 +131,7 @@ impl Downloader {
             session,
             state_path,
             state: Mutex::new(state),
+            save_lock: Mutex::new(()),
             download_dir,
             closed: AtomicBool::new(false),
         };
@@ -209,6 +215,162 @@ impl Downloader {
         });
         views.sort_by_key(|v| v.id.0);
         views
+    }
+
+    /// Advances the queue by one pass: starts the torrents that own a free
+    /// slot, parks the rest and lets finished torrents seed.
+    ///
+    /// A long-lived front end calls this on every refresh (the UI polls once
+    /// per second), the same way [`Downloader::run_until`] does.
+    pub fn tick(&self) -> Result<(), Error> {
+        self.sync_queue()
+    }
+
+    /// Files of a torrent with per-file progress and selection state.
+    pub fn files(&self, id: TorrentId) -> Result<Vec<FileView>, Error> {
+        let handle = self.handle(id)?;
+        let stats = handle.stats();
+        let selected: Option<Vec<usize>> = handle.only_files();
+        let mut files: Vec<FileView> = Vec::new();
+        handle.with_metadata(|metadata| {
+            for (index, info) in metadata.file_infos.iter().enumerate() {
+                let len = info.len;
+                let downloaded = stats
+                    .file_progress
+                    .get(index)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(len);
+                let progress = if len == 0 {
+                    1.0
+                } else {
+                    (downloaded as f64 / len as f64).clamp(0.0, 1.0)
+                };
+                files.push(FileView {
+                    index,
+                    path: info.relative_filename.to_string_lossy().replace('\\', "/"),
+                    len,
+                    downloaded,
+                    progress,
+                    included: selected
+                        .as_ref()
+                        .is_none_or(|wanted| wanted.contains(&index)),
+                });
+            }
+        })?;
+        Ok(files)
+    }
+
+    /// Includes or excludes a single file of a torrent.
+    ///
+    /// librqbit keeps the selection as `only_files`; the set is rebuilt from the
+    /// current selection so that repeated calls stay independent.
+    pub fn set_file_included(
+        &self,
+        id: TorrentId,
+        index: usize,
+        included: bool,
+    ) -> Result<(), Error> {
+        let handle = self.handle(id)?;
+        // librqbit refuses file selection changes while the initial check runs,
+        // so give it a moment to settle before touching `only_files`.
+        self.wait_for_initial_check(Duration::from_secs(3));
+        let file_count = handle.with_metadata(|metadata| metadata.file_infos.len())?;
+        if index >= file_count {
+            return Err(Error::InvalidArgument(format!(
+                "torrent {id} has no file #{index}"
+            )));
+        }
+
+        let mut selection: HashSet<usize> = match handle.only_files() {
+            Some(list) => list.into_iter().collect(),
+            None => (0..file_count).collect(),
+        };
+        if included {
+            selection.insert(index);
+        } else {
+            selection.remove(&index);
+        }
+        if selection.is_empty() {
+            return Err(Error::InvalidArgument(
+                "a torrent must keep at least one file selected".to_string(),
+            ));
+        }
+
+        self.rt
+            .block_on(self.session.update_only_files(&handle, &selection))?;
+        Ok(())
+    }
+
+    /// Trackers announced for a torrent, ordered by URL.
+    pub fn trackers(&self, id: TorrentId) -> Result<Vec<TrackerView>, Error> {
+        let handle = self.handle(id)?;
+        let mut trackers: Vec<TrackerView> = handle
+            .shared
+            .trackers
+            .iter()
+            .map(|url| TrackerView {
+                url: url.to_string(),
+                tier: 0,
+            })
+            .collect();
+        trackers.sort_by(|a, b| a.url.cmp(&b.url));
+        Ok(trackers)
+    }
+
+    /// Peers the engine currently tracks for a torrent.
+    pub fn peers(&self, id: TorrentId) -> Result<Vec<PeerView>, Error> {
+        let handle = self.handle(id)?;
+        let Some(live) = handle.live() else {
+            return Ok(Vec::new());
+        };
+        let snapshot = live.per_peer_stats_snapshot(Default::default());
+        let mut peers: Vec<PeerView> = snapshot
+            .peers
+            .into_iter()
+            .map(|(address, stats)| PeerView {
+                address,
+                client: stats.client_name,
+                state: stats.state.to_string(),
+                fetched_bytes: stats.counters.fetched_bytes,
+                uploaded_bytes: stats.counters.uploaded_bytes,
+            })
+            .collect();
+        peers.sort_by(|a, b| a.address.cmp(&b.address));
+        Ok(peers)
+    }
+
+    /// Aggregate speeds, listening port and queue numbers for the status bar.
+    pub fn session_stats(&self) -> SessionView {
+        let snapshot = self.session.stats_snapshot();
+        let state = self.with_state(|s| s.clone());
+        let active = self
+            .handles()
+            .iter()
+            .filter(|(_, handle)| handle.stats().live.is_some())
+            .count();
+        let listen_addr = self.session.listen_addr();
+        let port = self
+            .session
+            .announce_port()
+            .or_else(|| listen_addr.map(|addr| addr.port()))
+            .unwrap_or(0);
+        let dht_nodes = self
+            .session
+            .get_dht()
+            .map_or(0, |dht| dht.stats().routing_table_size);
+
+        SessionView {
+            down_bps: snapshot.download_speed.as_bytes(),
+            up_bps: snapshot.upload_speed.as_bytes(),
+            active: u32::try_from(active).unwrap_or(u32::MAX),
+            port,
+            port_open: listen_addr.is_some(),
+            dht_nodes: u32::try_from(dht_nodes).unwrap_or(u32::MAX),
+            max_active: state.max_active,
+            down_limit_bps: state.limits.down_bps.unwrap_or(0),
+            up_limit_bps: state.limits.up_bps.unwrap_or(0),
+        }
     }
 
     /// Pauses a torrent (user pause, it will not be restarted by the queue).
@@ -381,6 +543,7 @@ impl Downloader {
                         priority,
                         user_paused,
                         source: String::new(),
+                        added_at_ms: now_ms(),
                     },
                 );
                 added = true;
@@ -605,6 +768,12 @@ impl Downloader {
     }
 
     fn save_state(&self) -> Result<(), Error> {
+        // Hold the write lock across snapshot+write: two concurrent commands
+        // must not overwrite each other with an older snapshot.
+        let _guard = match self.save_lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         let state = self.with_state(|s| s.clone());
         state.save(&self.state_path)
     }
@@ -639,14 +808,35 @@ struct Metadata {
     files: Vec<Vec<String>>,
 }
 
+/// Whether the engine currently runs this torrent, or `None` if it cannot be
+/// started or paused at all (error state).
+fn engine_paused(state: TorrentStatsState) -> Option<bool> {
+    match state {
+        TorrentStatsState::Paused => Some(true),
+        TorrentStatsState::Live => Some(false),
+        TorrentStatsState::Initializing { paused } => Some(paused),
+        TorrentStatsState::Error => None,
+    }
+}
+
 async fn set_paused(
     session: &Arc<Session>,
     handle: &Arc<ManagedTorrent>,
     paused: bool,
 ) -> Option<String> {
-    if handle.is_paused() == paused {
+    // Decide on the real engine state, not on `handle.is_paused()`: that flag is
+    // already cleared while a torrent added with `paused: true` is initializing,
+    // so it reports "not paused" for a torrent that the engine leaves in the
+    // `Paused` state once its initial check finishes. Trusting it skipped the
+    // `unpause` call and the torrent never started.
+    let Some(current) = engine_paused(handle.stats().state) else {
+        // A torrent in the error state can neither be paused nor started.
+        return None;
+    };
+    if current == paused {
         return None;
     }
+
     let result = if paused {
         session.pause(handle).await
     } else {
@@ -656,7 +846,7 @@ async fn set_paused(
         Ok(()) => None,
         Err(error) => {
             // A racing state change is harmless as long as the end state matches.
-            if handle.is_paused() == paused {
+            if engine_paused(handle.stats().state) == Some(paused) {
                 None
             } else {
                 Some(format!("{error:#}"))
@@ -690,6 +880,14 @@ fn view(raw_id: usize, handle: &Arc<ManagedTorrent>, state: &State) -> TorrentVi
     };
 
     let metadata_available = handle.metadata.load().is_some();
+    let pieces = handle
+        .with_metadata(|metadata| metadata.lengths().total_pieces())
+        .unwrap_or(0);
+    let pieces_done = stats
+        .live
+        .as_ref()
+        .map_or(0, |live| live.snapshot.downloaded_and_checked_pieces);
+    let pieces_done = u32::try_from(pieces_done).unwrap_or(u32::MAX);
     let torrent_state = if matches!(stats.state, TorrentStatsState::Error) {
         TorrentState::Error
     } else if user_paused {
@@ -723,6 +921,12 @@ fn view(raw_id: usize, handle: &Arc<ManagedTorrent>, state: &State) -> TorrentVi
         seeds,
         priority,
         save_path: handle.output_folder().to_path_buf(),
+        downloaded_bytes: stats.progress_bytes,
+        uploaded_bytes: stats.uploaded_bytes,
+        hash: handle.info_hash().as_string(),
+        added_at_ms: entry.map(|e| e.added_at_ms).unwrap_or(0),
+        pieces,
+        pieces_done,
     }
 }
 

@@ -144,4 +144,80 @@ pub struct TorrentView {
     pub priority: u32,
     /// Folder the torrent's files are written to.
     pub save_path: PathBuf,
+    /// Downloaded bytes (verified against the piece hashes).
+    pub downloaded_bytes: u64,
+    /// Uploaded bytes since the torrent started.
+    pub uploaded_bytes: u64,
+    /// Hex info hash, 40 characters.
+    pub hash: String,
+    /// When the torrent was added, Unix time in milliseconds (`0` = unknown).
+    pub added_at_ms: u64,
+    /// Number of pieces in the torrent.
+    pub pieces: u32,
+    /// Number of pieces verified so far.
+    pub pieces_done: u32,
+}
+
+/// One file of a torrent, as shown in the UI's file list.
+#[derive(Debug, Clone)]
+pub struct FileView {
+    /// Zero-based file index (stable for the lifetime of the torrent).
+    pub index: usize,
+    /// Path relative to the torrent's `save_path`, with `/` separators.
+    pub path: String,
+    /// File length in bytes.
+    pub len: u64,
+    /// Bytes of this file already downloaded.
+    pub downloaded: u64,
+    /// Progress in `0.0..=1.0`.
+    pub progress: f64,
+    /// Whether the file is selected for download.
+    pub included: bool,
+}
+
+/// One tracker of a torrent.
+#[derive(Debug, Clone)]
+pub struct TrackerView {
+    /// Tracker announce URL.
+    pub url: String,
+    /// Announce tier, `0` when the metadata has a flat tracker list.
+    pub tier: u32,
+}
+
+/// One peer the engine currently knows about for a torrent.
+#[derive(Debug, Clone)]
+pub struct PeerView {
+    /// Peer address (`ip:port`).
+    pub address: String,
+    /// Client name reported by the peer, if any.
+    pub client: Option<String>,
+    /// Engine peer state (`live`, `connecting`, `queued`, …).
+    pub state: String,
+    /// Bytes fetched from this peer.
+    pub fetched_bytes: u64,
+    /// Bytes uploaded to this peer.
+    pub uploaded_bytes: u64,
+}
+
+/// Aggregate numbers for the whole session (status bar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionView {
+    /// Current download rate, bytes per second.
+    pub down_bps: u64,
+    /// Current upload rate, bytes per second.
+    pub up_bps: u64,
+    /// Torrents currently running (downloading or seeding).
+    pub active: u32,
+    /// Listening port (`0` when the listener is disabled).
+    pub port: u16,
+    /// Whether the engine is accepting incoming connections.
+    pub port_open: bool,
+    /// DHT routing table size.
+    pub dht_nodes: u32,
+    /// Active-download limit, `0` = unlimited.
+    pub max_active: u32,
+    /// Download limit in bytes per second, `0` = unlimited.
+    pub down_limit_bps: u64,
+    /// Upload limit in bytes per second, `0` = unlimited.
+    pub up_limit_bps: u64,
 }

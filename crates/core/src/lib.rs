@@ -27,12 +27,14 @@ pub use downloader::{
     AddOptions, DEFAULT_METADATA_TIMEOUT, Downloader, DownloaderOptions,
 };
 pub use error::Error;
-pub use model::{Source, TorrentId, TorrentState, TorrentView};
+pub use model::{
+    FileView, PeerView, SessionView, Source, TorrentId, TorrentState, TorrentView, TrackerView,
+};
 pub use paths::{validate_component, validate_relative_path, validate_torrent_files};
 pub use scheduler::{QueueItem, QueuePlan, plan, sort_for_queue};
 pub use state::{
     DEFAULT_MAX_ACTIVE, Limits, STATE_VERSION, State, TorrentEntry, default_data_dir,
-    default_download_dir,
+    default_download_dir, now_ms,
 };
 
 /// Convenience alias for results produced by this crate.

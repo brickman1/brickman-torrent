@@ -1,10 +1,9 @@
 # Brickman Torrent — scope
 
-Two milestones: (1) engine + CLI, (2) desktop UI. This repository implements
-milestone 1. Section "UI (next milestone)" is a specification input only; none
-of it is built here.
+Two milestones: (1) engine + CLI, (2) desktop UI. Both are implemented in this
+repository; the sections below say what is done and what remains.
 
-## Core (milestone 1, implemented)
+## Core (implemented)
 
 - **Sources**: `.torrent` files and magnet links with BEP-9 metadata exchange
   (metadata is fetched and validated before the torrent starts).
@@ -14,17 +13,18 @@ of it is built here.
   bitfields, so progress and file layout survive restarts.
 - **Limits**: global download/upload rate limits in bytes per second
   (`0` = unlimited), applied to the running engine and persisted.
-- **File selection**: per-file selection with priorities `skip`, `low`,
-  `normal`, `high`, `max` is part of the MVP scope. Status: the engine supports
-  file inclusion and piece priority, the core/CLI in this milestone do not
-  expose it yet — adding `set_file_priority` is remaining work before the UI
-  needs it (the UI's Files tab is its first consumer).
+- **File selection**: per-file inclusion (`only_files` via
+  `set_file_included`) plus per-file progress and file listing. The engine also
+  supports piece priorities; the UI exposes selection only (see remaining).
 - **Queue**: numeric priorities (`1` = highest) and "maximum active downloads"
   (`0` = unlimited). At most `max_active` unfinished torrents run; the rest are
   parked in the engine's paused state and reported as `queued`, which is
   distinct from a pause requested by the user. A freed slot goes to the lowest
   priority number (ties broken by torrent id). Priorities, user pauses, the
   active limit and rate limits persist between processes.
+- **Status data for a UI**: torrent snapshot (speeds, peers, seeds, piece
+  counts, hash, upload total, add time), session snapshot (speeds, active
+  count, listening port, DHT size, limits).
 - **Path safety**: names from torrent metadata are validated (no absolute paths,
   no drive/UNC prefixes, no `..`, no NUL/control characters, no Windows-forbidden
   characters, no reserved device names) and the torrent is refused before the
@@ -33,25 +33,72 @@ of it is built here.
   engine or input errors and the CLI prints readable messages.
 - **No telemetry, no built-in trackers, no content search.**
 
-## CLI (milestone 1, implemented)
+## CLI (implemented)
 
 `add`, `list`, `pause`, `resume`, `rm`, `priority`, `limits`, `max-active`,
 `run`. One command = one action, then the process exits. The engine runs in the
 foreground only for `add --wait N` and `run [--seconds N]`.
 
-## UI (next milestone — NOT implemented)
+## Desktop UI (implemented)
 
-- Tauri desktop application, Windows first.
-- μTorrent-like layout: toolbar, left filter panel (all / downloading / seeding /
-  completed / paused / active), main table with sortable columns (name, size,
-  progress, down, up, peers, seeds, state, priority, ETA), bottom tab bar with
-  General / Files / Trackers / Peers, status bar with totals and limits.
-- Tray icon with show/hide, "pause all"/"resume all", exit.
-- Settings for download folder, limits, active limit, update check toggle.
-- Update check is the only non-torrent network request; it is optional and can
-  be disabled.
-- Long-lived engine session with live UI updates (the core already separates the
-  queue plan from the engine so the UI can drive it).
+- Tauri 2 application, Windows first; crate `apps/desktop/src-tauri`
+  (package `brickman-desktop`), frontend `apps/desktop` (Vite + TypeScript,
+  plain DOM, no framework).
+- μTorrent-like layout: toolbar, left filter panel (all / downloading / active /
+  queued / completed / paused / stopped), main table with sortable columns
+  (name, size, progress, down, up, seeds, peers, ETA, priority, label), bottom
+  tab bar with General / Files / Trackers / Peers, status bar with totals and
+  limits.
+- The UI runs in a plain browser on a mock provider (`npm run dev`) and in the
+  webview on the real engine; if the engine cannot start, the UI falls back to
+  the mock so the window is never empty.
+- One `brickman_core::Downloader` per run, created at startup, state in
+  `%APPDATA%\BrickmanTorrent`, download folder from the settings (empty =
+  `Downloads`). All core calls run on blocking threads (`spawn_blocking`),
+  because the core owns a private tokio runtime.
+- Commands: `list_torrents`, `get_session_stats`, `add_torrent_file`,
+  `add_magnet`, `resume_torrents`, `pause_torrents`, `stop_torrents`,
+  `remove_torrents`, `set_priority`, `set_max_active`, `set_limits`,
+  `list_files`, `set_file_priority`, `list_trackers`, `list_peers`,
+  `check_for_updates`, `open_external`, plus `engine_init` and
+  `set_download_dir` for startup.
+- Settings: download folder, limits, active limit, update check toggle, theme,
+  language. Persisted in the webview's `localStorage`.
+- Update check: a single `GET` to
+  `https://api.github.com/repos/brickman1/brickman-torrent/releases/latest`
+  with a 5 s timeout. `404` (repository not published yet) is reported as
+  "up to date" and is not retried; the check can be disabled. No telemetry.
+- Opening a link (`open_external`) uses the system browser through the Tauri
+  opener plugin and accepts `http(s)` only.
+- `brickman-desktop.exe <file.torrent>` adds the torrent on startup.
+
+### Known simplifications
+
+- **`stop_torrents` == `pause_torrents`.** The core keeps a single user-pause
+  flag per torrent: a paused torrent leaves the queue and stays down until
+  resumed. The UI shows both buttons, but there is no separate "force stop"
+  state yet.
+- **File selection is binary** in the UI: a checkbox per file maps to
+  `only_files` (included / excluded). There are no per-file priority levels.
+- **Tracker and peer detail is shallow**: tracker announce status is not
+  exposed by the engine, so the list shows URL and a running/idle hint; per-peer
+  progress is not exposed either, while speeds are derived from byte counters.
+- **Seeds/peers totals** show connected counts only (the engine does not expose
+  swarm totals), so the table shows the same number twice.
+- Labels and comments are empty: neither exists in the core.
+
+## Remaining (not implemented)
+
+- **Five-level file priorities** (`skip` / `low` / `normal` / `high` / `max`)
+  in the UI; the engine supports piece priorities, the core and UI do not.
+- **Tray icon** with show/hide, "pause all"/"resume all", exit.
+- **File associations** for `.torrent` and `magnet:` links, and registering the
+  app as a handler (the CLI argument is a manual stand-in).
+- **Single instance**: a second launch should hand its arguments to the running
+  window instead of opening a new engine on the same state folder.
+- **Signed updates**: a signed update feed and in-app installer. Today the check
+  only reports that a release exists and opens the release page.
+- Drag and drop of `.torrent` files onto the window.
 
 ## Legal
 

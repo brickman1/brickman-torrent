@@ -463,6 +463,54 @@ button {
   color: var(--text-dim);
 }
 
+/* The "#" column is the queue position; the first downloading row is the
+   torrent that holds the queue and gets a marker plus a bold number. */
+.torrent-table td.ordinal.top {
+  color: var(--st-downloading);
+}
+
+.torrent-table td.ordinal.top .ordinal-number {
+  font-weight: 700;
+}
+
+.queue-marker {
+  margin-right: 3px;
+  font-size: 8px;
+  vertical-align: 1px;
+  color: var(--st-downloading);
+}
+
+.queue-grip {
+  float: left;
+  font-size: 9px;
+  line-height: 23px;
+  color: var(--text-dim);
+  opacity: 0;
+  cursor: grab;
+}
+
+.torrent-table tbody tr:hover .queue-grip {
+  opacity: 0.55;
+}
+
+.torrent-table tr.selected .queue-grip,
+.torrent-table tr.selected .queue-marker {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* Drag and drop: the dragged row fades, the insertion point is a line. */
+.torrent-table tbody tr.dragging {
+  opacity: 0.5;
+}
+
+.torrent-table tbody tr.drop-before td {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.torrent-table tbody tr.drop-after td {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
 .torrent-table td.name-cell {
   padding-left: 8px;
 }

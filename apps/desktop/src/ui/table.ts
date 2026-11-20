@@ -1,4 +1,7 @@
 // Torrent table: fixed columns, 24 px rows, click-to-sort headers.
+//
+// The "#" column is the queue position: rows come from the provider in queue
+// order and the first row is the torrent that downloads first.
 
 import { formatEta, formatPercent, formatSize, formatSpeed } from '../core/format';
 import { effectiveStatus, type Torrent } from '../core/types';
@@ -16,7 +19,6 @@ export type SortKey =
   | 'seeds'
   | 'peers'
   | 'eta'
-  | 'priority'
   | 'label';
 
 export interface SortState {
@@ -34,7 +36,7 @@ export interface ColumnDef {
 
 export const COLUMNS: ColumnDef[] = [
   { key: 'ordinal', sortKey: 'ordinal', labelKey: 'column.index', width: '3%', align: 'right' },
-  { key: 'name', sortKey: 'name', labelKey: 'column.name', width: '26.5%', align: 'left' },
+  { key: 'name', sortKey: 'name', labelKey: 'column.name', width: '31.5%', align: 'left' },
   { key: 'size', sortKey: 'size', labelKey: 'column.size', width: '7%', align: 'right' },
   { key: 'status', sortKey: 'status', labelKey: 'column.status', width: '9%', align: 'left' },
   { key: 'progress', sortKey: 'progress', labelKey: 'column.progress', width: '10.5%', align: 'left' },
@@ -43,7 +45,6 @@ export const COLUMNS: ColumnDef[] = [
   { key: 'seeds', sortKey: 'seeds', labelKey: 'column.seeds', width: '6%', align: 'right' },
   { key: 'peers', sortKey: 'peers', labelKey: 'column.peers', width: '6%', align: 'right' },
   { key: 'eta', sortKey: 'eta', labelKey: 'column.eta', width: '6%', align: 'right' },
-  { key: 'priority', sortKey: 'priority', labelKey: 'column.priority', width: '5%', align: 'right' },
   { key: 'label', sortKey: 'label', labelKey: 'column.label', width: '6%', align: 'left' },
 ];
 
@@ -89,8 +90,6 @@ export function sortValue(torrent: Torrent, key: SortKey): number | string {
       return torrent.peers;
     case 'eta':
       return torrent.etaSec ?? Number.POSITIVE_INFINITY;
-    case 'priority':
-      return torrent.priority;
     case 'label':
       return torrent.label.toLowerCase();
   }
@@ -133,14 +132,25 @@ export function renderHeader(
   thead.appendChild(row);
 }
 
+export interface RowOptions {
+  /**
+   * True when the table is sorted by "#" ascending, i.e. it shows the queue in
+   * order. Only then can rows be dragged to reorder it.
+   */
+  draggable: boolean;
+  /** Torrent downloading at the top of the queue: gets the accent marker. */
+  activeTopId: string | null;
+}
+
 export function renderRows(
   tbody: HTMLTableSectionElement,
   rows: Torrent[],
   selection: Set<string>,
+  options: RowOptions,
 ): void {
   const frag = document.createDocumentFragment();
   for (const torrent of rows) {
-    frag.appendChild(buildRow(torrent, selection.has(torrent.id)));
+    frag.appendChild(buildRow(torrent, selection.has(torrent.id), options));
   }
   clear(tbody);
   tbody.appendChild(frag);
@@ -156,14 +166,30 @@ function progressBar(progress: number): HTMLElement {
   );
 }
 
-function buildRow(torrent: Torrent, selected: boolean): HTMLTableRowElement {
+function ordinalCell(torrent: Torrent, activeTop: boolean): HTMLTableCellElement {
+  return el(
+    'td',
+    {
+      class: `num ordinal${activeTop ? ' top' : ''}`,
+      title: activeTop ? t('table.topOfQueue') : t('table.queuePosition', { position: torrent.ordinal }),
+    },
+    el('span', { class: 'queue-grip', 'aria-hidden': 'true', text: '≡' }),
+    activeTop ? el('span', { class: 'queue-marker', 'aria-hidden': 'true', text: '▶' }) : null,
+    el('span', { class: 'ordinal-number', text: String(torrent.ordinal) }),
+  );
+}
+
+function buildRow(torrent: Torrent, selected: boolean, options: RowOptions): HTMLTableRowElement {
   const status = effectiveStatus(torrent);
   const speedClass = (value: number): string => `num speed${value > 0 ? '' : ' zero'}`;
-
-  return el(
+  const row = el(
     'tr',
-    { class: selected ? 'selected' : '', dataset: { id: torrent.id } },
-    el('td', { class: 'num ordinal' }, String(torrent.ordinal)),
+    {
+      class: selected ? 'selected' : '',
+      dataset: { id: torrent.id },
+      draggable: options.draggable ? 'true' : null,
+    },
+    ordinalCell(torrent, options.activeTopId === torrent.id),
     el('td', { class: 'name-cell', title: torrent.name }, el('span', { class: 'name-text', text: torrent.name })),
     el('td', { class: 'num' }, formatSize(torrent.size)),
     el('td', { class: 'status-cell' }, el('span', { class: `status st-${status}`, text: t(`status.${status}`) })),
@@ -173,7 +199,7 @@ function buildRow(torrent: Torrent, selected: boolean): HTMLTableRowElement {
     el('td', { class: 'num' }, `${torrent.seeds} (${torrent.seedsTotal})`),
     el('td', { class: 'num' }, `${torrent.peers} (${torrent.peersTotal})`),
     el('td', { class: `num eta${torrent.etaSec ? '' : ' zero'}` }, formatEta(torrent.etaSec)),
-    el('td', { class: 'num priority' }, String(torrent.priority)),
     el('td', { class: 'label-cell', text: torrent.label }),
   );
+  return row;
 }

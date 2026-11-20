@@ -28,7 +28,10 @@ export interface TorrentProvider {
   pause(ids: string[]): Promise<void>;
   stop(ids: string[]): Promise<void>;
   remove(ids: string[], deleteData: boolean): Promise<void>;
-  setPriority(id: string, priority: number): Promise<void>;
+  /** Moves a torrent to a zero-based queue position (drag and drop). */
+  moveTo(id: string, index: number): Promise<void>;
+  /** Moves a torrent one position up (`delta < 0`) or down the queue. */
+  moveBy(id: string, delta: -1 | 1): Promise<void>;
   setMaxActive(maxActive: number): Promise<void>;
   setLimits(limits: { downLimit: number; upLimit: number }): Promise<void>;
   /** Folder new torrents are written to (Tauri: engine default). */

@@ -30,7 +30,6 @@
   "column.seeds": "Seeds",
   "column.peers": "Peers",
   "column.eta": "ETA",
-  "column.priority": "Priority",
   "column.label": "Label",
 
   "status.downloading": "Downloading",
@@ -43,6 +42,8 @@
   "status.error": "Error",
 
   "table.empty": "No torrents",
+  "table.queuePosition": "Queue position {position}",
+  "table.topOfQueue": "Top of the queue: downloading first",
 
   "tab.general": "General",
   "tab.files": "Files",
@@ -89,8 +90,10 @@
   "menu.start": "Start",
   "menu.pause": "Pause",
   "menu.stop": "Stop",
-  "menu.priority": "Priority",
-  "menu.enterNumber": "Enter number…",
+  "menu.moveTop": "Move to top",
+  "menu.moveUp": "Move up",
+  "menu.moveDown": "Move down",
+  "menu.moveToPosition": "Move to position…",
   "menu.remove": "Remove…",
 
   "common.cancel": "Cancel",
@@ -105,9 +108,9 @@
   "dialog.removeTitle": "Remove torrent",
   "dialog.removeBody": "Remove {count} selected torrent(s) from the list?",
   "dialog.removeData": "Also delete downloaded files",
-  "dialog.priorityTitle": "Set priority",
-  "dialog.priorityLabel": "Queue position (1 = first)",
-  "dialog.priorityHint": "Other torrents shift by one position.",
+  "dialog.positionTitle": "Queue position",
+  "dialog.positionLabel": "Position (1 = first)",
+  "dialog.positionHint": "The torrent moves there and the others shift by one.",
 
   "settings.title": "Settings",
   "settings.apply": "Apply",
@@ -116,8 +119,8 @@
   "settings.downloadDirPlaceholder": "Empty = the system default (Downloads)",
   "settings.downloadDirHint": "Used for torrents added from now on. Empty means the system default.",
   "settings.sectionQueue": "Queue",
-  "settings.maxActive": "Maximum active torrents",
-  "settings.maxActiveHint": "Torrents beyond this limit are shown as Queued.",
+  "settings.maxActive": "Maximum active downloads",
+  "settings.maxActiveHint": "The top torrent downloads and takes the whole bandwidth; the rest wait in the queue.",
   "settings.sectionBandwidth": "Bandwidth",
   "settings.downLimit": "Download limit, kB/s (0 = unlimited)",
   "settings.upLimit": "Upload limit, kB/s (0 = unlimited)",
@@ -152,5 +155,6 @@
   "toast.noSelection": "Select a torrent first",
   "toast.removed": "Removed {count} torrent(s)",
   "toast.added": "Added: {name}",
-  "toast.error": "Operation failed"
+  "toast.error": "Operation failed",
+  "toast.sortToReorder": "Sort by # to change the queue"
 }

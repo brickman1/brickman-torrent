@@ -17,7 +17,7 @@ export type FilePriority = -1 | 1;
 
 export interface Torrent {
   id: string;
-  /** Stable number shown in the "#" column. */
+  /** 1-based queue position shown in the "#" column. */
   ordinal: number;
   name: string;
   size: number;
@@ -32,7 +32,7 @@ export interface Torrent {
   peers: number;
   peersTotal: number;
   etaSec: number | null;
-  /** 1 = first in the queue (numeric priority, sortable). */
+  /** Queue position, `1` = first; derived from the order, not stored. */
   priority: number;
   label: string;
   /** True when the torrent is waiting because of the max-active limit. */
@@ -120,7 +120,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',
   locale: 'en',
   checkUpdatesOnStartup: true,
-  maxActive: 4,
+  /** One download at a time: the queue decides who gets the bandwidth. */
+  maxActive: 1,
   downLimit: 0,
   upLimit: 0,
   downloadDir: '',

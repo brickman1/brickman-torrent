@@ -2,9 +2,14 @@
 //!
 //! The engine (librqbit) persists the torrent list itself (`.torrent` bytes,
 //! bitfields, output folders, paused flag). What it does not have is the
-//! user's queue: numeric priorities, "paused by user" vs "waiting for a slot",
+//! user's queue: the queue order, "paused by user" vs "waiting for a slot",
 //! the active limit and the bandwidth limits. Those live here, in
 //! `<data-dir>/state.json`, written atomically (temp file + rename).
+//!
+//! The queue is an explicit list of torrent ids ([`State::order`]): the first
+//! entry downloads first and gets the whole bandwidth. The numeric
+//! [`TorrentEntry::priority`] is derived from that position (`1` = first) and
+//! kept only for display and for state files written by older versions.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -14,11 +19,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 
-/// Current on-disk format version.
-pub const STATE_VERSION: u32 = 1;
+/// Current on-disk format version (2 added the explicit queue order).
+pub const STATE_VERSION: u32 = 2;
 
 /// Default number of simultaneously running downloads.
-pub const DEFAULT_MAX_ACTIVE: u32 = 3;
+pub const DEFAULT_MAX_ACTIVE: u32 = 1;
 
 /// Bandwidth limits; `None` means unlimited.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,7 +39,8 @@ pub struct Limits {
 /// Persisted per-torrent queue data.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TorrentEntry {
-    /// Queue priority, `1` is the highest.
+    /// Queue position, `1` is the first. Derived from [`State::order`];
+    /// older state files are migrated by sorting on this number.
     #[serde(default)]
     pub priority: u32,
     /// Paused by the user (as opposed to parked by the queue).
@@ -68,6 +74,10 @@ pub struct State {
     /// Global bandwidth limits.
     #[serde(default)]
     pub limits: Limits,
+    /// Queue order, first entry downloads first. Source of truth for the queue;
+    /// [`TorrentEntry::priority`] is derived from it.
+    #[serde(default)]
+    pub order: Vec<u32>,
     /// Per torrent data, keyed by engine id.
     #[serde(default)]
     pub torrents: BTreeMap<u32, TorrentEntry>,
@@ -79,6 +89,7 @@ impl Default for State {
             version: STATE_VERSION,
             max_active: DEFAULT_MAX_ACTIVE,
             limits: Limits::default(),
+            order: Vec::new(),
             torrents: BTreeMap::new(),
         }
     }
@@ -86,19 +97,29 @@ impl Default for State {
 
 impl State {
     /// Loads the state file; a missing file yields the default state.
+    ///
+    /// Files written by older versions have no `order`; their entries are
+    /// sorted by the numeric priority to recover the queue.
     pub fn load(path: &Path) -> Result<Self, Error> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => serde_json::from_str(&text).map_err(|e| {
+        let mut state = match std::fs::read_to_string(path) {
+            Ok(text) => serde_json::from_str::<State>(&text).map_err(|e| {
                 Error::State(format!("cannot parse {}: {e}", path.display()))
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
-            Err(e) => Err(Error::State(format!("cannot read {}: {e}", path.display()))),
-        }
+            })?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => State::default(),
+            Err(e) => return Err(Error::State(format!("cannot read {}: {e}", path.display()))),
+        };
+        state.normalize();
+        Ok(state)
     }
 
     /// Writes the state file atomically (temp file + rename).
+    ///
+    /// A normalized copy is written, so the file on disk always has a complete
+    /// order and dense priorities even if the in-memory value is mid-update.
     pub fn save(&self, path: &Path) -> Result<(), Error> {
-        let text = serde_json::to_vec_pretty(self)
+        let mut snapshot = self.clone();
+        snapshot.normalize();
+        let text = serde_json::to_vec_pretty(&snapshot)
             .map_err(|e| Error::State(format!("cannot serialize state: {e}")))?;
         atomic_write(path, &text)?;
         Ok(())
@@ -119,16 +140,125 @@ impl State {
         self.torrents.get(&id)
     }
 
-    /// Returns the entry for `id`, creating it with the next priority.
+    /// Zero-based queue index of a torrent, if it is in the queue.
+    pub fn position(&self, id: u32) -> Option<usize> {
+        self.order.iter().position(|candidate| *candidate == id)
+    }
+
+    /// Returns the entry for `id`, creating it at the end of the queue.
     pub fn entry_or_insert(&mut self, id: u32, source: String) -> &mut TorrentEntry {
-        let priority = self.next_priority();
-        let added_at_ms = now_ms();
-        self.torrents.entry(id).or_insert(TorrentEntry {
-            priority,
-            user_paused: false,
-            source,
-            added_at_ms,
-        })
+        if !self.torrents.contains_key(&id) {
+            let priority = self.next_priority();
+            let added_at_ms = now_ms();
+            self.torrents.insert(
+                id,
+                TorrentEntry {
+                    priority,
+                    user_paused: false,
+                    source,
+                    added_at_ms,
+                },
+            );
+        }
+        if !self.order.contains(&id) {
+            self.order.push(id);
+        }
+        self.reindex();
+        self.torrents
+            .get_mut(&id)
+            .expect("the entry was inserted above")
+    }
+
+    /// Removes a torrent from the queue and from the entry map.
+    pub fn remove_torrent(&mut self, id: u32) -> bool {
+        let removed = self.torrents.remove(&id).is_some();
+        self.order.retain(|candidate| *candidate != id);
+        self.reindex();
+        removed
+    }
+
+    /// Moves a torrent to the zero-based `index`, clamped to the queue.
+    ///
+    /// Returns `false` when the torrent is not in the queue.
+    pub fn move_to(&mut self, id: u32, index: usize) -> bool {
+        let Some(from) = self.position(id) else {
+            return false;
+        };
+        let to = index.min(self.order.len().saturating_sub(1));
+        if from == to {
+            return true;
+        }
+        let moved = self.order.remove(from);
+        self.order.insert(to, moved);
+        self.reindex();
+        true
+    }
+
+    /// Moves a torrent `delta` positions (negative = earlier in the queue).
+    ///
+    /// Returns `false` when the torrent is not in the queue.
+    pub fn move_by(&mut self, id: u32, delta: isize) -> bool {
+        let Some(from) = self.position(id) else {
+            return false;
+        };
+        let last = self.order.len().saturating_sub(1);
+        let to = from
+            .saturating_add_signed(delta)
+            .min(last);
+        self.move_to(id, to)
+    }
+
+    /// Applies a whole new queue order (drag and drop of several rows).
+    ///
+    /// Ids in `ids` come first, in the given order; any torrent the caller did
+    /// not mention keeps its previous relative position after them. Unknown ids
+    /// are ignored.
+    pub fn reorder(&mut self, ids: &[u32]) {
+        let mut next: Vec<u32> = Vec::with_capacity(self.order.len());
+        for id in ids {
+            if self.torrents.contains_key(id) && !next.contains(id) {
+                next.push(*id);
+            }
+        }
+        for id in &self.order {
+            if !next.contains(id) {
+                next.push(*id);
+            }
+        }
+        self.order = next;
+        self.reindex();
+    }
+
+    /// Makes [`State::order`] complete (one entry per known torrent, no
+    /// duplicates) and rewrites the numeric priorities from the positions.
+    pub fn normalize(&mut self) {
+        let mut seen: Vec<u32> = Vec::with_capacity(self.order.len());
+        self.order
+            .retain(|id| self.torrents.contains_key(id) && !seen.contains(id) && {
+                seen.push(*id);
+                true
+            });
+        let mut missing: Vec<u32> = self
+            .torrents
+            .keys()
+            .copied()
+            .filter(|id| !seen.contains(id))
+            .collect();
+        missing.sort_by_key(|id| {
+            let entry = self.torrents.get(id);
+            (entry.map_or(0, |e| e.priority), *id)
+        });
+        self.order.extend(missing);
+        self.reindex();
+    }
+
+    /// Rewrites every priority from the queue position, `1` = first.
+    fn reindex(&mut self) {
+        for (index, id) in self.order.iter().enumerate() {
+            if let Some(entry) = self.torrents.get_mut(id) {
+                entry.priority = u32::try_from(index + 1).unwrap_or(u32::MAX);
+            }
+        }
     }
 }
 
@@ -252,12 +382,14 @@ mod tests {
         let state = State::load(&path).expect("load");
         assert_eq!(state, State::default());
         assert_eq!(state.max_active, DEFAULT_MAX_ACTIVE);
+        assert_eq!(state.max_active, 1);
         assert!(state.torrents.is_empty());
+        assert!(state.order.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn priority_and_pause_flag_round_trip() {
+    fn queue_order_and_pause_flag_round_trip() {
         let dir = temp_dir("round-trip");
         let path = dir.join("state.json");
 
@@ -268,19 +400,123 @@ mod tests {
         state.limits.down_bps = Some(1024 * 1024);
         state.entry_or_insert(0, "magnet:?xt=urn:btih:00".to_string());
         state.entry_or_insert(1, "a.torrent".to_string());
-        state.torrents.get_mut(&1).expect("entry").priority = 5;
+        state.entry_or_insert(2, "b.torrent".to_string());
         state.torrents.get_mut(&1).expect("entry").user_paused = true;
-        state.save(&path).expect("save");
+        // The last torrent moves to the front: the queue is the list order.
+        assert!(state.move_to(2, 0));
+        assert_eq!(state.order, vec![2, 0, 1]);
 
+        state.save(&path).expect("save");
         let loaded = State::load(&path).expect("load");
-        assert_eq!(loaded, state);
-        assert_eq!(loaded.entry(1).map(|e| e.priority), Some(5));
+
+        assert_eq!(loaded.order, vec![2, 0, 1]);
+        assert_eq!(loaded.max_active, 2);
+        assert_eq!(loaded.limits.down_bps, Some(1024 * 1024));
+        // Priorities are derived from the position, `1` = first.
+        let priorities: Vec<u32> = loaded.order.iter().map(|id| loaded.torrents[id].priority).collect();
+        assert_eq!(priorities, vec![1, 2, 3]);
         assert!(loaded.entry(1).is_some_and(|e| e.user_paused));
-        assert_eq!(loaded.next_priority(), 6);
+        assert_eq!(loaded.next_priority(), 4);
 
         // No temp file is left behind.
         assert!(!dir.join("state.json.tmp").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn move_to_clamps_to_queue_bounds() {
+        let mut state = State::default();
+        for id in 0..3 {
+            state.entry_or_insert(id, format!("{id}.torrent"));
+        }
+        assert_eq!(state.order, vec![0, 1, 2]);
+
+        // Index 0 is the front.
+        assert!(state.move_to(2, 0));
+        assert_eq!(state.order, vec![2, 0, 1]);
+        // The last index.
+        assert!(state.move_to(2, 2));
+        assert_eq!(state.order, vec![0, 1, 2]);
+        // Past the end: clamped to the last position.
+        assert!(state.move_to(0, 99));
+        assert_eq!(state.order, vec![1, 2, 0]);
+        assert_eq!(state.position(0), Some(2));
+        assert_eq!(state.torrents[&0].priority, 3);
+        // An unknown id is not moved and reported as such.
+        assert!(!state.move_to(42, 0));
+    }
+
+    #[test]
+    fn move_by_steps_one_position_and_stops_at_ends() {
+        let mut state = State::default();
+        for id in 0..3 {
+            state.entry_or_insert(id, format!("{id}.torrent"));
+        }
+        assert!(state.move_by(0, 1));
+        assert_eq!(state.order, vec![1, 0, 2]);
+        assert!(state.move_by(0, 1));
+        assert!(state.move_by(0, 1));
+        assert_eq!(state.order, vec![1, 2, 0]);
+        assert!(state.move_by(0, -1));
+        assert_eq!(state.order, vec![1, 0, 2]);
+        assert!(state.move_by(1, -5));
+        assert_eq!(state.order, vec![1, 0, 2]);
+    }
+
+    #[test]
+    fn reorder_applies_the_given_order_and_keeps_the_rest() {
+        let mut state = State::default();
+        for id in 0..4 {
+            state.entry_or_insert(id, format!("{id}.torrent"));
+        }
+        // Only ids 2 and 0 are mentioned: they go first, the rest follows.
+        state.reorder(&[2, 0]);
+        assert_eq!(state.order, vec![2, 0, 1, 3]);
+        // Unknown ids are ignored, duplicates collapse.
+        state.reorder(&[9, 3, 3, 2]);
+        assert_eq!(state.order, vec![3, 2, 0, 1]);
+        assert_eq!(state.torrents[&3].priority, 1);
+        assert_eq!(state.torrents[&1].priority, 4);
+    }
+
+    #[test]
+    fn legacy_state_without_order_is_migrated_by_priority() {
+        let dir = temp_dir("legacy");
+        let path = dir.join("state.json");
+        // Version 1 file: no `order` field, priorities 3, 1, 2.
+        std::fs::write(
+            &path,
+            br#"{
+              "version": 1,
+              "max_active": 1,
+              "limits": {"down_bps": null, "up_bps": null},
+              "torrents": {
+                "0": {"priority": 3, "user_paused": false, "source": "a", "added_at_ms": 1},
+                "1": {"priority": 1, "user_paused": true, "source": "b", "added_at_ms": 2},
+                "2": {"priority": 2, "user_paused": false, "source": "c", "added_at_ms": 3}
+              }
+            }"#,
+        )
+        .expect("write");
+
+        let state = State::load(&path).expect("load");
+        assert_eq!(state.order, vec![1, 2, 0]);
+        assert_eq!(state.torrents[&0].priority, 3);
+        assert!(state.entry(1).is_some_and(|e| e.user_paused));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn removing_a_torrent_keeps_the_queue_dense() {
+        let mut state = State::default();
+        for id in 0..3 {
+            state.entry_or_insert(id, format!("{id}.torrent"));
+        }
+        assert!(state.remove_torrent(1));
+        assert_eq!(state.order, vec![0, 2]);
+        assert_eq!(state.torrents[&2].priority, 2);
+        assert!(!state.remove_torrent(1));
+        assert!(state.position(1).is_none());
     }
 
     #[test]

@@ -12,7 +12,11 @@ in a normal browser against a mock provider.
 - `.torrent` files and magnet links (BEP-9 metadata exchange),
 - DHT, HTTP/UDP trackers, PEX, local service discovery,
 - fastresume: progress survives restarts,
-- numeric queue priorities, "maximum active downloads", global up/down limits,
+- a queue that is a list: the order of the rows is the priority, and
+  "maximum active downloads" (default 1) decides how many run at once,
+- drag and drop of rows to reorder the queue, plus move up / down / to a
+  position,
+- global up/down limits,
 - per-file selection (download / don't download),
 - torrent file paths are validated before anything is written, so a hostile
   torrent cannot write outside the download folder.
@@ -73,9 +77,17 @@ npm --prefix apps/desktop run tauri build  # MSI + NSIS installers in target/rel
 The app talks to the core through Tauri commands (`apps/desktop/src-tauri/src/lib.rs`):
 `list_torrents`, `get_session_stats`, `add_torrent_file`, `add_magnet`,
 `resume_torrents`, `pause_torrents`, `stop_torrents`, `remove_torrents`,
-`set_priority`, `set_max_active`, `set_limits`, `list_files`,
+`move_torrent`, `move_torrent_by`, `set_max_active`, `set_limits`, `list_files`,
 `set_file_priority`, `list_trackers`, `list_peers`, `check_for_updates`,
 `open_external`, plus `engine_init` / `set_download_dir` used at startup.
+
+- The "#" column is the queue position. Drag a row (or its grip in the first
+  column) up or down to reorder the queue; a line shows where it will land.
+  The same is in the context menu: "Move to top", "Move up", "Move down" and
+  "Move to position…".
+- Dragging is only allowed while the table is sorted by "#": sorting by name,
+  size or another column is a temporary view and does not rewrite the queue
+  (the app says "Sort by # to change the queue").
 
 - The engine is created once per run; state lives in
   `%APPDATA%\BrickmanTorrent\` (`state.json` + the engine's `session\` folder),
@@ -97,7 +109,10 @@ brickman-torrent list
 brickman-torrent pause <id|all>
 brickman-torrent resume <id|all>
 brickman-torrent rm <id> [--files]
-brickman-torrent priority <id> <number>
+brickman-torrent move <id> <position>
+brickman-torrent up <id>
+brickman-torrent down <id>
+brickman-torrent priority <id> <position>
 brickman-torrent limits [--down <KiB/s>] [--up <KiB/s>]
 brickman-torrent max-active <n>
 brickman-torrent run [--seconds SECS]
@@ -110,9 +125,13 @@ in `%APPDATA%\BrickmanTorrent\` (`state.json` for the queue, `session\` for the
 engine's torrent list and fastresume bitfields); override it with `TC_DATA_DIR`,
 and the default download folder with `TC_DOWNLOAD_DIR`.
 
-Priorities are numbers, `1` is the highest. `max-active 0` means unlimited.
-Torrents that wait for a free slot are shown as `queued`, torrents paused by the
-user as `paused`.
+The queue is the order of the list: position `1` downloads first and takes the
+whole bandwidth, the rest wait as `queued` (distinct from a pause requested by
+the user). `move` and its alias `priority` put a torrent at a 1-based position
+(`1` = first), `up` / `down` shift it by one; the same works by dragging rows in
+the desktop app. `max_active` (default `1`, `0` = unlimited) is how many
+unfinished torrents may download at once. A torrent that reaches 100 % leaves
+the download queue at once and may keep seeding, so the next one starts.
 
 ## Acceptable use
 

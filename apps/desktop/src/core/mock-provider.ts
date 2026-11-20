@@ -42,7 +42,7 @@ export class MockProvider implements TorrentProvider {
 
   private torrents: MockTorrent[] = createInitialTorrents();
   private readonly fileMap = new Map<string, TorrentFile[]>();
-  private maxActive = 4;
+  private maxActive = 1;
   private downLimit = 0;
   private upLimit = 0;
   private updateAvailable = true;
@@ -132,22 +132,26 @@ export class MockProvider implements TorrentProvider {
       this.fileMap.delete(torrent.id);
       return false;
     });
-    this.normalizePriorities();
+    this.reindexQueue();
     this.afterMutation();
   }
 
-  async setPriority(id: string, priority: number): Promise<void> {
-    const target = this.torrents.find((torrent) => torrent.id === id);
-    if (!target) return;
-    const ordered = this.torrents
-      .filter((torrent) => torrent.id !== id)
-      .sort((a, b) => a.priority - b.priority);
-    const index = clamp(Math.round(priority) - 1, 0, ordered.length);
-    ordered.splice(index, 0, target);
-    ordered.forEach((torrent, i) => {
-      torrent.priority = i + 1;
-    });
+  /** Queue order is the array order: the first torrent downloads first. */
+  async moveTo(id: string, index: number): Promise<void> {
+    const from = this.torrents.findIndex((torrent) => torrent.id === id);
+    if (from < 0) return;
+    const to = clamp(Math.round(index), 0, this.torrents.length - 1);
+    if (from === to) return;
+    const [target] = this.torrents.splice(from, 1);
+    if (target) this.torrents.splice(to, 0, target);
+    this.reindexQueue();
     this.afterMutation();
+  }
+
+  async moveBy(id: string, delta: -1 | 1): Promise<void> {
+    const from = this.torrents.findIndex((torrent) => torrent.id === id);
+    if (from < 0) return;
+    await this.moveTo(id, from + delta);
   }
 
   async setMaxActive(maxActive: number): Promise<void> {
@@ -213,11 +217,13 @@ export class MockProvider implements TorrentProvider {
   }
 
   private snapshot(torrent: MockTorrent): Torrent {
-    return { ...torrent, pieces: { ...torrent.pieces } };
+    // The queue is the array order; the position shown as "#" is derived from
+    // it, exactly like the Rust core derives it from `State::order`.
+    const ordinal = this.torrents.indexOf(torrent) + 1;
+    return { ...torrent, ordinal, priority: ordinal, pieces: { ...torrent.pieces } };
   }
 
   private insert(name: string, label: string, size: number): Torrent {
-    const maxPriority = this.torrents.reduce((max, t) => Math.max(max, t.priority), 0);
     const torrent: MockTorrent = {
       id: `mock-new-${Date.now().toString(36)}-${this.addCounter}`,
       ordinal: this.torrents.length + 1,
@@ -232,7 +238,7 @@ export class MockProvider implements TorrentProvider {
       peers: 0,
       peersTotal: 4,
       etaSec: null,
-      priority: maxPriority + 1,
+      priority: this.torrents.length + 1,
       label,
       queued: false,
       addedAt: Date.now(),
@@ -259,21 +265,16 @@ export class MockProvider implements TorrentProvider {
     this.tick(false);
   }
 
-  private normalizePriorities(): void {
-    [...this.torrents]
-      .sort((a, b) => a.priority - b.priority)
-      .forEach((torrent, index) => {
-        torrent.priority = index + 1;
-      });
+  private reindexQueue(): void {
     this.torrents.forEach((torrent, index) => {
       torrent.ordinal = index + 1;
+      torrent.priority = index + 1;
     });
   }
 
   private recomputeQueue(): void {
-    const candidates = this.torrents
-      .filter((torrent) => torrent.status === 'downloading')
-      .sort((a, b) => a.priority - b.priority);
+    // Candidates keep the queue order of the array.
+    const candidates = this.torrents.filter((torrent) => torrent.status === 'downloading');
     candidates.forEach((torrent, index) => {
       torrent.queued = index >= this.maxActive;
     });

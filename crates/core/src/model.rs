@@ -140,7 +140,7 @@ pub struct TorrentView {
     pub peers: u32,
     /// Number of connected peers that are seeds.
     pub seeds: u32,
-    /// Queue priority, `1` is the highest.
+    /// Queue position, `1` = first in the queue (derived from the order).
     pub priority: u32,
     /// Folder the torrent's files are written to.
     pub save_path: PathBuf,

@@ -16,12 +16,19 @@ repository; the sections below say what is done and what remains.
 - **File selection**: per-file inclusion (`only_files` via
   `set_file_included`) plus per-file progress and file listing. The engine also
   supports piece priorities; the UI exposes selection only (see remaining).
-- **Queue**: numeric priorities (`1` = highest) and "maximum active downloads"
-  (`0` = unlimited). At most `max_active` unfinished torrents run; the rest are
-  parked in the engine's paused state and reported as `queued`, which is
-  distinct from a pause requested by the user. A freed slot goes to the lowest
-  priority number (ties broken by torrent id). Priorities, user pauses, the
-  active limit and rate limits persist between processes.
+- **Queue**: a list, not a number. The order of torrents (`state.json`:
+  `order`) *is* the queue — position `1` downloads first and takes the whole
+  bandwidth. "Maximum active downloads" (default `1`, `0` = unlimited) caps how
+  many unfinished torrents download at once; the rest are parked in the engine's
+  paused state and reported as `queued`, which is distinct from a pause
+  requested by the user. The API can `move_to` an index, `move_up` / `move_down`
+  by one and `reorder` a whole list; the numeric `priority` is derived from the
+  position and kept for display and old state files. Changing the order applies
+  at once (`sync_queue`), so a different torrent may start or pause. A torrent
+  that reaches 100 % leaves the download queue immediately and may keep seeding
+  without a slot, so the next one starts. Order, user pauses, the active limit
+  and rate limits persist between processes; a state file without `order` (older
+  version) is migrated by sorting on its numeric priorities.
 - **Status data for a UI**: torrent snapshot (speeds, peers, seeds, piece
   counts, hash, upload total, add time), session snapshot (speeds, active
   count, listening port, DHT size, limits).
@@ -35,9 +42,11 @@ repository; the sections below say what is done and what remains.
 
 ## CLI (implemented)
 
-`add`, `list`, `pause`, `resume`, `rm`, `priority`, `limits`, `max-active`,
-`run`. One command = one action, then the process exits. The engine runs in the
-foreground only for `add --wait N` and `run [--seconds N]`.
+`add`, `list`, `pause`, `resume`, `rm`, `move`, `up`, `down`, `priority`
+(an alias of `move`), `limits`, `max-active`, `run`. One command = one action,
+then the process exits. The engine runs in the foreground only for `add --wait N`
+and `run [--seconds N]`. `list` shows the queue in order; `#` is the engine id and
+`Pos` the 1-based queue position.
 
 ## Desktop UI (implemented)
 
@@ -46,9 +55,17 @@ foreground only for `add --wait N` and `run [--seconds N]`.
   plain DOM, no framework).
 - μTorrent-like layout: toolbar, left filter panel (all / downloading / active /
   queued / completed / paused / stopped), main table with sortable columns
-  (name, size, progress, down, up, seeds, peers, ETA, priority, label), bottom
+  (name, size, progress, down, up, seeds, peers, ETA, label), bottom
   tab bar with General / Files / Trackers / Peers, status bar with totals and
   limits.
+- **Queue in the table**: the "#" column is the queue position, the first row
+  downloads first. Drag a row (or its grip in the first column) to reorder the
+  queue; a line marks the insertion point and the core's `move_to` applies the
+  new order at once. The torrent that is downloading at the top of the queue
+  gets a marker and a bold number. Sorting by another column (name, size, …) is
+  a temporary view: drag and drop is then refused with "Sort by # to change the
+  queue". The row context menu has "Move to top", "Move up", "Move down" and
+  "Move to position…" (a number, for those who prefer it).
 - The UI runs in a plain browser on a mock provider (`npm run dev`) and in the
   webview on the real engine; if the engine cannot start, the UI falls back to
   the mock so the window is never empty.
@@ -58,12 +75,13 @@ foreground only for `add --wait N` and `run [--seconds N]`.
   because the core owns a private tokio runtime.
 - Commands: `list_torrents`, `get_session_stats`, `add_torrent_file`,
   `add_magnet`, `resume_torrents`, `pause_torrents`, `stop_torrents`,
-  `remove_torrents`, `set_priority`, `set_max_active`, `set_limits`,
-  `list_files`, `set_file_priority`, `list_trackers`, `list_peers`,
-  `check_for_updates`, `open_external`, plus `engine_init` and
+  `remove_torrents`, `move_torrent`, `move_torrent_by`, `set_max_active`,
+  `set_limits`, `list_files`, `set_file_priority`, `list_trackers`,
+  `list_peers`, `check_for_updates`, `open_external`, plus `engine_init` and
   `set_download_dir` for startup.
-- Settings: download folder, limits, active limit, update check toggle, theme,
-  language. Persisted in the webview's `localStorage`.
+- Settings: download folder, limits, maximum active downloads (default 1),
+  update check toggle, theme, language. Persisted in the webview's
+  `localStorage`.
 - Update check: a single `GET` to
   `https://api.github.com/repos/brickman1/brickman-torrent/releases/latest`
   with a 5 s timeout. `404` (repository not published yet) is reported as
@@ -98,7 +116,8 @@ foreground only for `add --wait N` and `run [--seconds N]`.
   window instead of opening a new engine on the same state folder.
 - **Signed updates**: a signed update feed and in-app installer. Today the check
   only reports that a release exists and opens the release page.
-- Drag and drop of `.torrent` files onto the window.
+- Drag and drop of `.torrent` files onto the window (dragging rows to reorder
+  the queue is implemented).
 
 ## Legal
 

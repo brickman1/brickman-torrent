@@ -518,10 +518,13 @@ async fn remove_torrents(
     .await
 }
 
+/// Moves a torrent to a zero-based queue position; the UI sends the position
+/// of the drop indicator. The queue is applied on the next tick, which the
+/// list poll already runs once per second (and the command runs it directly).
 #[tauri::command]
-async fn set_priority(
+async fn move_torrent(
     id: String,
-    priority: u32,
+    index: usize,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let engine = engine(&state).await?;
@@ -532,8 +535,31 @@ async fn set_priority(
     run_blocking(move || {
         engine
             .downloader
-            .set_priority(id, priority)
+            .move_to(id, index)
             .map_err(|error| error.to_string())
+    })
+    .await
+}
+
+/// Steps a torrent one position up (`delta < 0`) or down in the queue.
+#[tauri::command]
+async fn move_torrent_by(
+    id: String,
+    delta: i32,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let engine = engine(&state).await?;
+    let id = parse_ids(&[id])?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "missing torrent id".to_string())?;
+    run_blocking(move || {
+        let result = if delta < 0 {
+            engine.downloader.move_up(id)
+        } else {
+            engine.downloader.move_down(id)
+        };
+        result.map_err(|error| error.to_string())
     })
     .await
 }
@@ -851,7 +877,8 @@ pub fn run() {
             pause_torrents,
             stop_torrents,
             remove_torrents,
-            set_priority,
+            move_torrent,
+            move_torrent_by,
             set_max_active,
             set_limits,
             list_files,

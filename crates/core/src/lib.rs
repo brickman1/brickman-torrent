@@ -3,9 +3,9 @@
 //! The crate wraps [librqbit] and adds what a desktop torrent client needs on
 //! top of a bare engine:
 //!
-//! * a numeric queue with "maximum active downloads" and a real `Queued` state
-//!   distinct from a user pause,
-//! * persistence of the queue (priorities, pause flags, limits) next to the
+//! * a queue that is a list: the order is the priority, with "maximum active
+//!   downloads" and a real `Queued` state distinct from a user pause,
+//! * persistence of the queue (order, pause flags, limits) next to the
 //!   engine's own fastresume data,
 //! * validation of torrent file paths before anything is written to disk
 //!   (defence against CWE-22 path traversal),

@@ -51,6 +51,9 @@ fn truncate(text: &str, width: usize) -> String {
 }
 
 /// Renders the torrent table used by `brickman-torrent list`.
+///
+/// Rows come in queue order; `#` is the engine id used by the commands and
+/// `Pos` is the 1-based queue position (the top line downloads first).
 pub fn render_table(views: &[TorrentView]) -> String {
     if views.is_empty() {
         return "no torrents\n".to_string();
@@ -74,7 +77,7 @@ pub fn render_table(views: &[TorrentView]) -> String {
         "Up",
         "Peers",
         "State",
-        "Prio",
+        "Pos",
         name_width = name_width
     ));
     for view in views {

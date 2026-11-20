@@ -21,7 +21,7 @@ use crate::model::{
 };
 use crate::paths;
 use crate::scheduler::{self, QueueItem};
-use crate::state::{State, TorrentEntry, now_ms};
+use crate::state::State;
 
 /// How long to wait for magnet metadata by default.
 pub const DEFAULT_METADATA_TIMEOUT: Duration = Duration::from_secs(60);
@@ -203,7 +203,7 @@ impl Downloader {
         Ok(id)
     }
 
-    /// All managed torrents, ordered by id.
+    /// All managed torrents, in queue order (first = next to download).
     ///
     /// Waits briefly (up to 5 s) for pending initial checks to finish so that
     /// progress and state reflect the data on disk rather than "checking".
@@ -213,7 +213,13 @@ impl Downloader {
         let mut views: Vec<TorrentView> = self.session.with_torrents(|torrents| {
             torrents.map(|(raw_id, handle)| view(raw_id, handle, &state)).collect()
         });
-        views.sort_by_key(|v| v.id.0);
+        // The table order *is* the queue; torrents unknown to the state file go
+        // last so a fresh session cannot hide anything.
+        views.sort_by_key(|v| {
+            state
+                .position(v.id.0)
+                .map_or((usize::MAX, v.id.0), |index| (index, v.id.0))
+        });
         views
     }
 
@@ -413,25 +419,89 @@ impl Downloader {
                 .delete(TorrentIdOrHash::Id(id.as_usize()), delete_files),
         )?;
         self.with_state(|s| {
-            s.torrents.remove(&id.0);
+            s.remove_torrent(id.0);
         });
         self.save_state()?;
         Ok(())
     }
 
-    /// Sets the numeric queue priority, `1` is the highest.
-    pub fn set_priority(&self, id: TorrentId, number: u32) -> Result<(), Error> {
-        if number == 0 {
-            return Err(Error::InvalidArgument(
-                "priority must be 1 or greater".to_string(),
-            ));
-        }
+    /// Moves a torrent to the zero-based `index` of the queue and applies the
+    /// new order immediately: whoever is now on top starts, the rest may pause.
+    ///
+    /// An index past the end puts the torrent last.
+    pub fn move_to(&self, id: TorrentId, index: usize) -> Result<(), Error> {
         self.ensure_exists(id)?;
+        let moved = self.with_state(|s| {
+            s.entry_or_insert(id.0, String::new());
+            s.move_to(id.0, index)
+        });
+        if !moved {
+            return Err(Error::NotFound(id));
+        }
+        self.save_state()?;
+        self.sync_queue()
+    }
+
+    /// Moves a torrent one position up; the first torrent stays first.
+    pub fn move_up(&self, id: TorrentId) -> Result<(), Error> {
+        self.move_by(id, -1)
+    }
+
+    /// Moves a torrent one position down; the last torrent stays last.
+    pub fn move_down(&self, id: TorrentId) -> Result<(), Error> {
+        self.move_by(id, 1)
+    }
+
+    fn move_by(&self, id: TorrentId, delta: isize) -> Result<(), Error> {
+        self.ensure_exists(id)?;
+        let moved = self.with_state(|s| {
+            s.entry_or_insert(id.0, String::new());
+            s.move_by(id.0, delta)
+        });
+        if !moved {
+            return Err(Error::NotFound(id));
+        }
+        self.save_state()?;
+        self.sync_queue()
+    }
+
+    /// Replaces the queue with an explicit order (drag and drop of many rows).
+    ///
+    /// Listed torrents come first in the given order; torrents missing from the
+    /// list keep their previous relative position. The new order is applied
+    /// right away.
+    pub fn reorder(&self, ids: &[TorrentId]) -> Result<(), Error> {
+        let raw: Vec<u32> = ids.iter().map(|id| id.0).collect();
         self.with_state(|s| {
-            s.entry_or_insert(id.0, String::new()).priority = number;
+            for id in &raw {
+                s.entry_or_insert(*id, String::new());
+            }
+            s.reorder(&raw);
         });
         self.save_state()?;
         self.sync_queue()
+    }
+
+    /// Places a torrent at a 1-based queue position (`1` = first).
+    ///
+    /// Kept for the numeric command line; [`Downloader::move_to`] is the same
+    /// operation with a zero-based index.
+    pub fn set_priority(&self, id: TorrentId, number: u32) -> Result<(), Error> {
+        if number == 0 {
+            return Err(Error::InvalidArgument(
+                "queue position must be 1 or greater".to_string(),
+            ));
+        }
+        self.move_to(id, usize::try_from(number - 1).unwrap_or(usize::MAX))
+    }
+
+    /// Queue position of a torrent, `1` = first, `0` = not in the queue.
+    pub fn position(&self, id: TorrentId) -> u32 {
+        self.with_state(|s| {
+            s.position(id.0)
+                .and_then(|index| u32::try_from(index + 1).ok())
+                .unwrap_or(0)
+        })
     }
 
     /// Maximum number of simultaneously downloading torrents, `0` = unlimited.
@@ -535,17 +605,8 @@ impl Downloader {
                 if state.torrents.contains_key(id) {
                     continue;
                 }
-                let priority = state.next_priority();
                 let user_paused = handle.is_paused();
-                state.torrents.insert(
-                    *id,
-                    TorrentEntry {
-                        priority,
-                        user_paused,
-                        source: String::new(),
-                        added_at_ms: now_ms(),
-                    },
-                );
+                state.entry_or_insert(*id, String::new()).user_paused = user_paused;
                 added = true;
             }
         });
@@ -732,7 +793,11 @@ impl Downloader {
                 let entry = state.entry(*id);
                 QueueItem {
                     id: TorrentId(*id),
-                    priority: entry.map(|e| e.priority).unwrap_or(u32::MAX),
+                    // Torrents missing from the queue state go last.
+                    position: state
+                        .position(*id)
+                        .and_then(|index| u32::try_from(index + 1).ok())
+                        .unwrap_or(u32::MAX),
                     user_paused: entry.map(|e| e.user_paused).unwrap_or(false),
                     finished: stats.finished,
                     errored: matches!(stats.state, TorrentStatsState::Error),
@@ -859,7 +924,13 @@ fn view(raw_id: usize, handle: &Arc<ManagedTorrent>, state: &State) -> TorrentVi
     let id = TorrentId(u32::try_from(raw_id).unwrap_or(u32::MAX));
     let stats = handle.stats();
     let entry = state.entry(id.0);
-    let priority = entry.map(|e| e.priority).unwrap_or(0);
+    // The visible queue position drives the number shown as "priority": the
+    // queue is the order of `State::order`, not a stored number.
+    let priority = state
+        .position(id.0)
+        .and_then(|index| u32::try_from(index + 1).ok())
+        .or_else(|| entry.map(|e| e.priority))
+        .unwrap_or(0);
     let user_paused = entry.is_some_and(|e| e.user_paused);
 
     let total_bytes = stats.total_bytes;

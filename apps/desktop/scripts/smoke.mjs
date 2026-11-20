@@ -41,6 +41,11 @@ const clickHeader = (key) =>
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   }, key);
 const statusText = () => page.locator('.statusbar').innerText();
+const names = () => page.$$eval('td.name-cell', (cells) => cells.map((cell) => cell.textContent?.trim() ?? ''));
+const statuses = () =>
+  page.$$eval('td.status-cell', (cells) => cells.map((cell) => cell.textContent?.trim() ?? ''));
+const ordinals = () =>
+  page.$$eval('td.ordinal .ordinal-number', (cells) => cells.map((cell) => cell.textContent?.trim() ?? ''));
 
 check('15 mock torrents rendered', (await rowCount()) === 15, String(await rowCount()));
 
@@ -50,26 +55,96 @@ const bannedNames =
 const tableText = await page.locator('.torrent-table').innerText();
 check('mock data has no commercial/pirate names', !bannedNames.test(tableText), tableText.slice(0, 120));
 
+// --- queue column --------------------------------------------------------
+const queueNumbers = await ordinals();
+check(
+  'default sort shows the queue in "#" as 1..15',
+  JSON.stringify(queueNumbers) === JSON.stringify(Array.from({ length: 15 }, (_, i) => String(i + 1))),
+  queueNumbers.join(','),
+);
+const activeStatuses = await statuses();
+check(
+  'exactly one download runs at a time (max active = 1)',
+  activeStatuses.filter((text) => text === 'Downloading').length === 1,
+  activeStatuses.join(','),
+);
+check(
+  'the rest of the queue waits as Queued',
+  activeStatuses.filter((text) => text === 'Queued').length >= 1,
+  activeStatuses.join(','),
+);
+check('one top-of-queue marker', (await page.locator('td.ordinal .queue-marker').count()) === 1);
+
 // --- sorting -------------------------------------------------------------
 await clickHeader('name');
-const names = await page.$$eval('td.name-cell', (cells) => cells.map((cell) => cell.textContent?.trim() ?? ''));
-const sorted = [...names].sort((a, b) => a.localeCompare(b, 'en'));
-check('header click sorts by name (asc)', JSON.stringify(names) === JSON.stringify(sorted));
+const sortedNames = await names();
+const expectedAsc = [...sortedNames].sort((a, b) => a.localeCompare(b, 'en'));
+check('header click sorts by name (asc)', JSON.stringify(sortedNames) === JSON.stringify(expectedAsc));
 await clickHeader('name');
-const namesDesc = await page.$$eval('td.name-cell', (cells) => cells.map((cell) => cell.textContent?.trim() ?? ''));
-check('second click reverses order', JSON.stringify(namesDesc) === JSON.stringify([...names].reverse()));
+const namesDesc = await names();
+check(
+  'second click reverses order',
+  JSON.stringify(namesDesc) === JSON.stringify([...sortedNames].reverse()),
+);
+
+// Drag and drop is a queue edit, so it must be refused in a temporary view.
+await page.evaluate(() => {
+  const rows = [...document.querySelectorAll('tr[data-id]')];
+  const transfer = new DataTransfer();
+  rows[2]?.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: transfer }));
+});
+await page.waitForTimeout(150);
+const sortToast = await page.locator('.toast').first().innerText().catch(() => '');
+check('dragging outside "#" order explains itself', sortToast.includes('Sort by #'), sortToast);
+await page.waitForTimeout(3300); // let the toast disappear
+
+await clickHeader('ordinal');
+check('clicking "#" restores the queue order', (await ordinals())[0] === '1');
+
+// --- drag and drop reorders the queue ------------------------------------
+const firstNameBefore = (await names())[0];
+await page.evaluate(() => {
+  const rows = [...document.querySelectorAll('tr[data-id]')];
+  const source = rows[2];
+  const target = rows[0];
+  if (!source || !target) return;
+  const transfer = new DataTransfer();
+  const rect = target.getBoundingClientRect();
+  const point = { clientX: rect.left + 60, clientY: rect.top + 2 };
+  source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: transfer }));
+  target.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: transfer, ...point }));
+  target.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: transfer, ...point }));
+  source.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: transfer }));
+});
+await page.waitForTimeout(800);
+const afterDrop = await names();
+check(
+  'dropping a row on the top moves it to position 1',
+  afterDrop[0] !== firstNameBefore && (await ordinals())[0] === '1',
+  afterDrop.slice(0, 3).join(' | '),
+);
+check(
+  'the queue stays 1..15 after the move',
+  JSON.stringify(await ordinals()) ===
+    JSON.stringify(Array.from({ length: 15 }, (_, i) => String(i + 1))),
+);
 
 // --- sidebar filters -----------------------------------------------------
 await clickIn('.side-item .side-label', 'Queued');
 await page.waitForTimeout(200);
-check('Queued filter shows 2 rows', (await rowCount()) === 2, String(await rowCount()));
-const queuedStatuses = await page.$$eval('td.status-cell', (cells) => cells.map((cell) => cell.textContent?.trim()));
+const queuedRows = await rowCount();
+const queuedStatuses = await statuses();
+check('Queued filter shows the waiting torrents', queuedRows >= 1, String(queuedRows));
 check('all filtered rows are Queued', queuedStatuses.every((text) => text === 'Queued'), queuedStatuses.join(','));
+
+await clickIn('.side-item .side-label', 'Downloading');
+await page.waitForTimeout(200);
+check('Downloading filter shows the single active torrent', (await rowCount()) === 1, String(await rowCount()));
 
 await clickIn('.side-item .side-label', 'Stopped');
 await page.waitForTimeout(200);
 check('Stopped filter shows 1 row', (await rowCount()) === 1, String(await rowCount()));
-const stoppedStatuses = await page.$$eval('td.status-cell', (cells) => cells.map((cell) => cell.textContent?.trim()));
+const stoppedStatuses = await statuses();
 check('Stopped filter rows are Stopped', stoppedStatuses.every((text) => text === 'Stopped'), stoppedStatuses.join(','));
 
 await clickIn('.side-item .side-label', 'All');
@@ -104,7 +179,7 @@ await page.getByRole('button', { name: 'Cancel' }).click();
 await page.waitForTimeout(200);
 check('cancel keeps all torrents', (await rowCount()) === 15, String(await rowCount()));
 
-// --- context menu + priority submenu ------------------------------------
+// --- context menu: queue actions ----------------------------------------
 await page.evaluate(() => {
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   const row = document.querySelector('tr[data-id]');
@@ -114,18 +189,45 @@ await page.evaluate(() => {
 });
 await page.waitForSelector('.ctx-menu');
 const menuText = await page.locator('.ctx-menu').innerText();
-check('context menu has Start/Pause/Stop/Priority/Remove', ['Start', 'Pause', 'Stop', 'Priority', 'Remove'].every((label) => menuText.includes(label)), menuText.replace(/\s+/g, ' '));
-const submenuVisible = await (async () => {
-  await page.locator('.ctx-menu .menu-item.has-sub').first().click();
-  await page.waitForTimeout(120);
-  return page.locator('.ctx-menu .menu-item.has-sub .submenu').first().isVisible();
-})();
-check('priority submenu opens on click', submenuVisible);
+check(
+  'context menu has queue commands',
+  ['Start', 'Pause', 'Stop', 'Move to top', 'Move up', 'Move down', 'Move to position', 'Remove'].every(
+    (label) => menuText.includes(label),
+  ),
+  menuText.replace(/\s+/g, ' '),
+);
 await page.evaluate(() => {
-  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  const items = [...document.querySelectorAll('.ctx-menu .menu-item')];
+  const target = items.find((item) => item.textContent?.includes('Move to position'));
+  target?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 });
-await page.waitForTimeout(120);
-check('Escape closes context menu', (await page.locator('.ctx-menu').count()) === 0);
+await page.waitForSelector('.modal-overlay');
+const positionDialog = await page.locator('.modal').innerText();
+check('"Move to position" opens a number dialog', /Queue position/.test(positionDialog), positionDialog.slice(0, 80));
+await page.getByRole('button', { name: 'Cancel' }).click();
+await page.waitForTimeout(200);
+
+// A numeric move must reorder the queue as well.
+const firstBeforeNumberMove = (await names())[0];
+await page.evaluate(() => {
+  const row = [...document.querySelectorAll('tr[data-id]')][3];
+  row?.dispatchEvent(
+    new MouseEvent('contextmenu', { bubbles: true, clientX: 320, clientY: 240 }),
+  );
+});
+await page.waitForSelector('.ctx-menu');
+await page.evaluate(() => {
+  const items = [...document.querySelectorAll('.ctx-menu .menu-item')];
+  items.find((item) => item.textContent?.includes('Move to top'))
+    ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+});
+await page.waitForTimeout(700);
+const afterMenuMove = await names();
+check(
+  '"Move to top" moves the row to position 1',
+  afterMenuMove[0] !== firstBeforeNumberMove && (await ordinals())[0] === '1',
+  afterMenuMove[0],
+);
 
 // --- settings: toggle mock update answer --------------------------------
 const openSettings = async () => {
@@ -141,7 +243,12 @@ const toggleMockUpdate = async (checked) => {
 };
 
 await openSettings();
-check('settings shows max active field', (await page.locator('.settings-form').innerText()).includes('Maximum active torrents'));
+const settingsText = await page.locator('.settings-form').innerText();
+check('settings shows maximum active downloads', settingsText.includes('Maximum active downloads'), settingsText.slice(0, 120));
+check(
+  'maximum active downloads defaults to 1',
+  (await page.locator('.settings-form input[type="number"]').first().inputValue()) === '1',
+);
 await toggleMockUpdate(false);
 await applySettings();
 await page.locator('.tb-btn[aria-label="Check for updates"]').click();

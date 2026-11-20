@@ -3,7 +3,12 @@
 //! The engine itself only knows "running" and "paused". The queue is layered on
 //! top: at most `max_active` unfinished torrents run, the rest are parked in
 //! the engine's paused state and reported as [`crate::TorrentState::Queued`].
-//! Torrents paused by the user stay paused and never occupy a slot.
+//! Torrents paused by the user stay paused and never occupy a slot, and a
+//! finished torrent leaves the download queue at once (it may keep seeding
+//! without a slot), so the next one starts.
+//!
+//! The queue is a list: the torrent at position `1` downloads first and gets
+//! the whole bandwidth. There is no separate numeric priority to compare.
 
 use crate::model::TorrentId;
 
@@ -12,8 +17,9 @@ use crate::model::TorrentId;
 pub struct QueueItem {
     /// Torrent id.
     pub id: TorrentId,
-    /// Queue priority, `1` is the highest.
-    pub priority: u32,
+    /// Queue position, `1` = first in the queue (the queue order itself is
+    /// kept by [`crate::State::order`]).
+    pub position: u32,
     /// Paused explicitly by the user (not by the queue).
     pub user_paused: bool,
     /// All selected files are downloaded.
@@ -25,7 +31,7 @@ pub struct QueueItem {
 /// Result of scheduling one pass over all torrents.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct QueuePlan {
-    /// Torrents that may download now, ordered by priority.
+    /// Torrents that may download now, in queue order.
     pub active: Vec<TorrentId>,
     /// Torrents waiting for a slot, best candidate first.
     pub queued: Vec<TorrentId>,
@@ -42,20 +48,22 @@ impl QueuePlan {
     }
 }
 
-/// Orders queue candidates by priority, ties broken by id (insertion order).
+/// Orders queue candidates by queue position.
 pub fn sort_for_queue(items: &[QueueItem]) -> Vec<QueueItem> {
     let mut sorted: Vec<QueueItem> = items
         .iter()
         .copied()
         .filter(|i| !i.user_paused && !i.finished && !i.errored)
         .collect();
-    sorted.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.id.cmp(&b.id)));
+    sorted.sort_by(|a, b| a.position.cmp(&b.position).then(a.id.cmp(&b.id)));
     sorted
 }
 
 /// Computes which torrents run, which wait and which may seed.
 ///
-/// `max_active == 0` means "no limit".
+/// `max_active == 0` means "no limit". Finished torrents are never counted
+/// against `max_active`: the download slot goes to the next unfinished torrent
+/// in the queue while the finished one may keep seeding.
 pub fn plan(items: &[QueueItem], max_active: u32) -> QueuePlan {
     let mut seeding: Vec<TorrentId> = items
         .iter()
@@ -94,10 +102,10 @@ pub fn plan(items: &[QueueItem], max_active: u32) -> QueuePlan {
 mod tests {
     use super::*;
 
-    fn item(id: u32, priority: u32) -> QueueItem {
+    fn item(id: u32, position: u32) -> QueueItem {
         QueueItem {
             id: TorrentId(id),
-            priority,
+            position,
             user_paused: false,
             finished: false,
             errored: false,
@@ -105,10 +113,10 @@ mod tests {
     }
 
     #[test]
-    fn sorts_by_priority_then_id() {
-        let items = vec![item(5, 3), item(2, 1), item(1, 3), item(9, 2)];
+    fn sorts_by_queue_position() {
+        let items = vec![item(5, 3), item(2, 1), item(1, 4), item(9, 2)];
         let order: Vec<u32> = sort_for_queue(&items).iter().map(|i| i.id.0).collect();
-        assert_eq!(order, vec![2, 9, 1, 5]);
+        assert_eq!(order, vec![2, 9, 5, 1]);
     }
 
     #[test]
@@ -121,6 +129,20 @@ mod tests {
     }
 
     #[test]
+    fn single_slot_takes_strictly_the_top_of_the_queue() {
+        let items = vec![item(0, 2), item(1, 1), item(2, 3)];
+        let first = plan(&items, 1);
+        assert_eq!(first.active, vec![TorrentId(1)]);
+        assert_eq!(first.queued, vec![TorrentId(0), TorrentId(2)]);
+
+        // Moving another torrent to position 1 hands the slot over at once.
+        let moved = vec![item(0, 2), item(1, 3), item(2, 1)];
+        let after_move = plan(&moved, 1);
+        assert_eq!(after_move.active, vec![TorrentId(2)]);
+        assert_eq!(after_move.queued, vec![TorrentId(0), TorrentId(1)]);
+    }
+
+    #[test]
     fn zero_max_active_means_unlimited() {
         let items = vec![item(0, 3), item(1, 1), item(2, 2)];
         let plan = plan(&items, 0);
@@ -129,18 +151,28 @@ mod tests {
     }
 
     #[test]
-    fn slot_is_reused_by_lowest_priority_number() {
+    fn finished_torrent_frees_its_slot_for_the_next_in_queue() {
         let mut items = vec![item(0, 1), item(1, 2), item(2, 3), item(3, 4)];
         let first = plan(&items, 2);
         assert_eq!(first.active, vec![TorrentId(0), TorrentId(1)]);
 
-        // Torrent #0 finishes: its slot must go to priority 3 (id 2).
+        // The top torrent completes: its download slot goes to position 3.
         items[0].finished = true;
         let after = plan(&items, 2);
         assert_eq!(after.active, vec![TorrentId(1), TorrentId(2)]);
         assert_eq!(after.queued, vec![TorrentId(3)]);
         assert_eq!(after.next_to_start(), Some(TorrentId(3)));
         assert_eq!(after.seeding, vec![TorrentId(0)]);
+    }
+
+    #[test]
+    fn finished_top_frees_the_only_slot() {
+        let mut items = vec![item(0, 1), item(1, 2)];
+        items[0].finished = true;
+        let plan = plan(&items, 1);
+        assert_eq!(plan.active, vec![TorrentId(1)]);
+        assert!(plan.queued.is_empty());
+        assert_eq!(plan.seeding, vec![TorrentId(0)]);
     }
 
     #[test]

@@ -22,7 +22,7 @@ import { icon, type IconName } from './icons';
 import { showContextMenu, type MenuItem } from './menu';
 import { openModal } from './modal';
 import { buildSettingsForm } from './settings-dialog';
-import { createTable, renderHeader, renderRows, sortTorrents, type SortKey, type SortState } from './table';
+import { COLUMNS, createTable, renderHeader, renderRows, sortTorrents, type SortKey, type SortState } from './table';
 
 type FilterKind =
   | 'all'
@@ -98,7 +98,8 @@ export class App {
     selection: new Set<string>(),
     anchorId: null,
     filter: { kind: 'all' },
-    sort: { key: 'priority', dir: 1 },
+    // The queue is the order: "#" ascending shows it as it downloads.
+    sort: { key: 'ordinal', dir: 1 },
     tab: 'general',
   };
 
@@ -257,8 +258,88 @@ export class App {
       this.openRowMenu(row.dataset.id, event.clientX, event.clientY);
     });
 
+    this.attachRowDragAndDrop();
+
     this.updateThemeButton();
     this.updateUpdateButton();
+  }
+
+  // ------------------------------------------------------------------- drag
+
+  /**
+   * Drag a row to a new place in the queue. Enabled only while the table is
+   * sorted by "#" ascending, because only then the row order is the queue:
+   * a name/size sort is a temporary view and is not allowed to rewrite it.
+   */
+  private attachRowDragAndDrop(): void {
+    const tbody = this.dom.tbody;
+    let dragId: string | null = null;
+
+    const clearMarks = (): void => {
+      for (const marked of tbody.querySelectorAll('tr.drop-before, tr.drop-after, tr.dragging')) {
+        marked.classList.remove('drop-before', 'drop-after', 'dragging');
+      }
+    };
+
+    tbody.addEventListener('dragstart', (event) => {
+      const row = (event.target as HTMLElement).closest<HTMLElement>('tr[data-id]');
+      if (!row?.dataset.id) return;
+      if (!this.queueEditable()) {
+        // Explain instead of silently doing nothing.
+        event.preventDefault();
+        this.toast(t('toast.sortToReorder'));
+        return;
+      }
+      dragId = row.dataset.id;
+      event.dataTransfer?.setData('text/plain', dragId);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+      row.classList.add('dragging');
+    });
+
+    tbody.addEventListener('dragover', (event) => {
+      if (!dragId) return;
+      const row = (event.target as HTMLElement).closest<HTMLElement>('tr[data-id]');
+      if (!row || row.dataset.id === dragId) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      const rect = row.getBoundingClientRect();
+      const after = event.clientY > rect.top + rect.height / 2;
+      for (const marked of tbody.querySelectorAll('tr.drop-before, tr.drop-after')) {
+        marked.classList.remove('drop-before', 'drop-after');
+      }
+      row.classList.add(after ? 'drop-after' : 'drop-before');
+    });
+
+    tbody.addEventListener('dragleave', (event) => {
+      if (event.target === tbody) clearMarks();
+    });
+
+    tbody.addEventListener('drop', (event) => {
+      const moved = dragId;
+      dragId = null;
+      clearMarks();
+      if (!moved) return;
+      const row = (event.target as HTMLElement).closest<HTMLElement>('tr[data-id]');
+      const target = row ? this.state.torrents.find((torrent) => torrent.id === row.dataset.id) : undefined;
+      if (!target) return;
+      event.preventDefault();
+      const rect = row!.getBoundingClientRect();
+      const after = event.clientY > rect.top + rect.height / 2;
+      // `ordinal` is the 1-based queue position, so the zero-based insertion
+      // index is `ordinal - 1` before the row and `ordinal` after it.
+      const index = Math.max(0, after ? target.ordinal : target.ordinal - 1);
+      void this.moveTo(moved, index);
+    });
+
+    tbody.addEventListener('dragend', () => {
+      dragId = null;
+      clearMarks();
+    });
+  }
+
+  /** Row order equals the queue only when sorted by "#" ascending. */
+  private queueEditable(): boolean {
+    return this.state.sort.key === 'ordinal' && this.state.sort.dir === 1;
   }
 
   // ------------------------------------------------------------- data flow
@@ -405,12 +486,20 @@ export class App {
         el(
           'tr',
           { class: 'empty-row' },
-          el('td', { colspan: 12, text: t('table.empty') }),
+          el('td', { colspan: COLUMNS.length, text: t('table.empty') }),
         ),
       );
       return;
     }
-    renderRows(this.dom.tbody, rows, this.state.selection);
+    // The torrent that actually downloads at the top of the queue gets the
+    // accent in the "#" column.
+    const activeTop = this.state.torrents
+      .filter((torrent) => effectiveStatus(torrent) === 'downloading')
+      .sort((a, b) => a.ordinal - b.ordinal)[0];
+    renderRows(this.dom.tbody, rows, this.state.selection, {
+      draggable: this.queueEditable(),
+      activeTopId: activeTop ? activeTop.id : null,
+    });
   }
 
   private renderDetails(force: boolean): void {
@@ -622,13 +711,18 @@ export class App {
     await this.refresh();
   }
 
-  private async setPriority(priority: number): Promise<void> {
-    const id = this.primaryId();
-    if (!id) {
-      this.toast(t('toast.noSelection'));
-      return;
-    }
-    await this.provider.setPriority(id, priority);
+  /**
+   * Reorders the queue: `index` is a zero-based position (drag and drop, or
+   * "move to position" with the number converted by the caller). The core
+   * applies the new order at once, so a different torrent may start now.
+   */
+  private async moveTo(id: string, index: number): Promise<void> {
+    await this.provider.moveTo(id, index);
+    await this.refresh();
+  }
+
+  private async moveBy(id: string, delta: -1 | 1): Promise<void> {
+    await this.provider.moveBy(id, delta);
     await this.refresh();
   }
 
@@ -749,7 +843,8 @@ export class App {
     });
   }
 
-  private promptPriority(): void {
+  /** "Move to position…": a number instead of dragging. */
+  private promptQueuePosition(): void {
     const torrent = this.selectedTorrent();
     if (!torrent) {
       this.toast(t('toast.noSelection'));
@@ -760,12 +855,12 @@ export class App {
       class: 'text-input',
       type: 'number',
       min: 1,
-      max: 999,
-      value: String(torrent.priority),
+      max: this.state.torrents.length,
+      value: String(torrent.ordinal),
     });
 
     openModal({
-      title: t('dialog.priorityTitle'),
+      title: t('dialog.positionTitle'),
       width: 340,
       body: el(
         'div',
@@ -773,10 +868,10 @@ export class App {
         el(
           'label',
           { class: 'field' },
-          el('span', { class: 'field-label', text: t('dialog.priorityLabel') }),
+          el('span', { class: 'field-label', text: t('dialog.positionLabel') }),
           input,
         ),
-        el('p', { class: 'hint', text: t('dialog.priorityHint') }),
+        el('p', { class: 'hint', text: t('dialog.positionHint') }),
       ),
       buttons: [
         { label: t('common.cancel') },
@@ -784,7 +879,9 @@ export class App {
           label: t('common.ok'),
           primary: true,
           onClick: () => {
-            void this.setPriority(Number(input.value) || torrent.priority);
+            const position = Math.round(Number(input.value));
+            if (!Number.isFinite(position) || position < 1) return;
+            void this.moveTo(torrent.id, position - 1);
           },
         },
       ],
@@ -798,14 +895,28 @@ export class App {
       void this.loadDetails(true).then(() => this.render());
     }
 
-    const priorityItems: MenuItem[] = [1, 2, 3].map((value) => ({
-      label: String(value),
-      action: () => void this.setPriority(value),
-    }));
-    priorityItems.push(
+    const torrent = this.state.torrents.find((item) => item.id === id);
+    const position = torrent?.ordinal ?? 1;
+    const last = this.state.torrents.length;
+    const queueItems: MenuItem[] = [
+      {
+        label: t('menu.moveTop'),
+        disabled: position <= 1,
+        action: () => void this.moveTo(id, 0),
+      },
+      {
+        label: t('menu.moveUp'),
+        disabled: position <= 1,
+        action: () => void this.moveBy(id, -1),
+      },
+      {
+        label: t('menu.moveDown'),
+        disabled: position >= last,
+        action: () => void this.moveBy(id, 1),
+      },
       { separator: true },
-      { label: t('menu.enterNumber'), action: () => this.promptPriority() },
-    );
+      { label: t('menu.moveToPosition'), action: () => this.promptQueuePosition() },
+    ];
 
     showContextMenu(
       [
@@ -813,7 +924,7 @@ export class App {
         { label: t('menu.pause'), action: () => void this.applySelectionAction('pause') },
         { label: t('menu.stop'), action: () => void this.applySelectionAction('stop') },
         { separator: true },
-        { label: t('menu.priority'), submenu: priorityItems },
+        ...queueItems,
         { separator: true },
         { label: t('menu.remove'), action: () => this.confirmRemove([...this.state.selection]) },
       ],

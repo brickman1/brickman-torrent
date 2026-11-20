@@ -30,7 +30,6 @@
   "column.seeds": "Сиды",
   "column.peers": "Пиры",
   "column.eta": "ETA",
-  "column.priority": "Приоритет",
   "column.label": "Метка",
 
   "status.downloading": "Загружается",
@@ -43,6 +42,8 @@
   "status.error": "Ошибка",
 
   "table.empty": "Нет торрентов",
+  "table.queuePosition": "Позиция в очереди: {position}",
+  "table.topOfQueue": "Верх очереди: качается первым",
 
   "tab.general": "Общее",
   "tab.files": "Файлы",
@@ -89,8 +90,10 @@
   "menu.start": "Старт",
   "menu.pause": "Пауза",
   "menu.stop": "Стоп",
-  "menu.priority": "Приоритет",
-  "menu.enterNumber": "Ввести число…",
+  "menu.moveTop": "В начало очереди",
+  "menu.moveUp": "Выше",
+  "menu.moveDown": "Ниже",
+  "menu.moveToPosition": "Перейти на позицию…",
   "menu.remove": "Удалить…",
 
   "common.cancel": "Отмена",
@@ -105,9 +108,9 @@
   "dialog.removeTitle": "Удалить торрент",
   "dialog.removeBody": "Удалить выбранные торренты ({count}) из списка?",
   "dialog.removeData": "Также удалить скачанные файлы",
-  "dialog.priorityTitle": "Задать приоритет",
-  "dialog.priorityLabel": "Место в очереди (1 = первый)",
-  "dialog.priorityHint": "Остальные торренты сдвинутся на одну позицию.",
+  "dialog.positionTitle": "Позиция в очереди",
+  "dialog.positionLabel": "Позиция (1 = первая)",
+  "dialog.positionHint": "Торрент встанет на это место, остальные сдвинутся на одну позицию.",
 
   "settings.title": "Настройки",
   "settings.apply": "Применить",
@@ -116,8 +119,8 @@
   "settings.downloadDirPlaceholder": "Пусто — системная по умолчанию (Downloads)",
   "settings.downloadDirHint": "Применяется к торрентам, добавленным после сохранения. Пусто — папка по умолчанию.",
   "settings.sectionQueue": "Очередь",
-  "settings.maxActive": "Максимум активных торрентов",
-  "settings.maxActiveHint": "Торренты сверх лимита показываются как «В очереди».",
+  "settings.maxActive": "Максимум одновременных загрузок",
+  "settings.maxActiveHint": "Верхний торрент качается и забирает всю скорость, остальные ждут в очереди.",
   "settings.sectionBandwidth": "Скорость",
   "settings.downLimit": "Лимит приёма, кБ/с (0 = без лимита)",
   "settings.upLimit": "Лимит отдачи, кБ/с (0 = без лимита)",
@@ -152,5 +155,6 @@
   "toast.noSelection": "Сначала выберите торрент",
   "toast.removed": "Удалено торрентов: {count}",
   "toast.added": "Добавлено: {name}",
-  "toast.error": "Операция не удалась"
+  "toast.error": "Операция не удалась",
+  "toast.sortToReorder": "Отсортируйте по №, чтобы менять очередь"
 }

@@ -43,7 +43,10 @@ fn run() -> Result<(), Error> {
         "pause" => cmd_pause_resume(rest, true),
         "resume" => cmd_pause_resume(rest, false),
         "rm" | "remove" => cmd_remove(rest),
-        "priority" => cmd_priority(rest),
+        "priority" => cmd_move(rest, true),
+        "move" => cmd_move(rest, false),
+        "up" => cmd_step(rest, -1),
+        "down" => cmd_step(rest, 1),
         "limits" => cmd_limits(rest),
         "max-active" => cmd_max_active(rest),
         "run" => cmd_run(rest),
@@ -198,20 +201,55 @@ fn cmd_remove(args: &[String]) -> Result<(), Error> {
     Ok(())
 }
 
-fn cmd_priority(args: &[String]) -> Result<(), Error> {
+/// `move <id> <position>` (and the `priority` alias): the number is a 1-based
+/// queue position, `1` = first. The torrents between the old and the new
+/// position shift by one, exactly like dragging a row in the desktop app.
+fn cmd_move(args: &[String], alias: bool) -> Result<(), Error> {
+    let usage = if alias {
+        "usage: brickman-torrent priority <id> <position>"
+    } else {
+        "usage: brickman-torrent move <id> <position>"
+    };
     if args.len() != 2 {
-        return Err(Error::InvalidArgument(
-            "usage: brickman-torrent priority <id> <number>".to_string(),
-        ));
+        return Err(Error::InvalidArgument(usage.to_string()));
     }
     let id: TorrentId = args[0].parse()?;
-    let number: u32 = args[1]
-        .parse()
-        .map_err(|_| Error::InvalidArgument("priority must be a positive number".to_string()))?;
+    let number: u32 = args[1].parse().map_err(|_| {
+        Error::InvalidArgument("position must be a number, 1 = first".to_string())
+    })?;
 
     let downloader = open(false)?;
     downloader.set_priority(id, number)?;
-    println!("priority of #{id} is now {number}");
+    println!(
+        "#{id} is now at queue position {}",
+        downloader.position(id)
+    );
+    print!("{}", ui::render_table(&downloader.list()));
+    Ok(())
+}
+
+/// `up <id>` / `down <id>`: one queue position in either direction.
+fn cmd_step(args: &[String], delta: isize) -> Result<(), Error> {
+    let usage = if delta < 0 {
+        "usage: brickman-torrent up <id>"
+    } else {
+        "usage: brickman-torrent down <id>"
+    };
+    let target = args
+        .first()
+        .ok_or_else(|| Error::InvalidArgument(usage.to_string()))?;
+    let id: TorrentId = target.parse()?;
+
+    let downloader = open(false)?;
+    if delta < 0 {
+        downloader.move_up(id)?;
+    } else {
+        downloader.move_down(id)?;
+    }
+    println!(
+        "#{id} is now at queue position {}",
+        downloader.position(id)
+    );
     print!("{}", ui::render_table(&downloader.list()));
     Ok(())
 }
@@ -346,7 +384,10 @@ Usage:
   brickman-torrent pause <id|all>
   brickman-torrent resume <id|all>
   brickman-torrent rm <id> [--files]
-  brickman-torrent priority <id> <number>
+  brickman-torrent move <id> <position>
+  brickman-torrent up <id>
+  brickman-torrent down <id>
+  brickman-torrent priority <id> <position>
   brickman-torrent limits [--down <KiB/s>] [--up <KiB/s>]
   brickman-torrent max-active <n>
   brickman-torrent run [--seconds SECS]
@@ -358,8 +399,11 @@ Environment:
 Notes:
   * every command terminates; `run` is the foreground engine and stops
     after --seconds or on Ctrl+C,
-  * priorities are numeric, 1 is the highest,
-  * `max-active 0` disables the limit,
+  * the queue is the list order: `move`/`priority` place a torrent at a
+    1-based position (1 = first), `up`/`down` shift it by one,
+  * the first torrent in the queue downloads first; finished torrents leave
+    the download queue and the next one starts,
+  * `max-active 0` disables the limit, the default is 1,
   * `rm <id>` keeps the downloaded files, `--files` deletes them.
 
 {}",

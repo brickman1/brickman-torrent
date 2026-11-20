@@ -5,19 +5,28 @@ import type { TorrentProvider } from '../core/provider';
 import { applyTheme, saveSettings } from '../core/settings';
 import {
   effectiveStatus,
+  withRecentFolder,
+  type AddTorrentOptions,
   type AppSettings,
   type FilePriority,
+  type OutputDirChange,
   type PeerInfo,
+  type PowerAction,
+  type PowerStatus,
   type SessionStats,
   type Torrent,
   type TorrentFile,
+  type TorrentPreview,
   type TrackerInfo,
   type UpdateInfo,
 } from '../core/types';
 import { APP_VERSION } from '../core/version';
 import { getLocale, setLocale, t } from '../i18n';
+import { openAddDialog, type AddDialogRequest } from './add-dialog';
+import { openChangeFolderDialog } from './change-folder-dialog';
 import { renderDetails as renderDetailsPanel, type DetailTab } from './details';
 import { clear, el } from './dom';
+import { errorText } from './folder-field';
 import { icon, type IconName } from './icons';
 import { showContextMenu, type MenuItem } from './menu';
 import { openModal } from './modal';
@@ -67,6 +76,15 @@ const FILTERS: FilterDef[] = [
 
 const UPDATE_CHECK_ON_START_DELAY = 1200;
 
+/** Banner wording per action; the force variant shuts down like a normal one. */
+const POWER_BANNER_KEYS: Record<PowerAction, string> = {
+  nothing: 'power.banner.shutdown',
+  sleep: 'power.banner.sleep',
+  hibernate: 'power.banner.hibernate',
+  shutdown: 'power.banner.shutdown',
+  'force-shutdown': 'power.banner.shutdown',
+};
+
 interface DomRefs {
   toolbar: HTMLElement;
   sidebar: HTMLElement;
@@ -114,6 +132,11 @@ export class App {
   private updateState: 'idle' | 'checking' | 'available' | 'uptodate' = 'idle';
   private updateInfo: UpdateInfo | null = null;
   private notice: { text: string; until: number } | null = null;
+  /** "Power off when downloads finish" countdown, polled with the torrents. */
+  private powerStatus: PowerStatus | null = null;
+  private powerBanner: HTMLElement | null = null;
+  /** System default download folder, shown when the setting is empty. */
+  private systemDownloadDir = '';
 
   constructor(root: HTMLElement, provider: TorrentProvider, settings: AppSettings) {
     this.root = root;
@@ -125,6 +148,7 @@ export class App {
     applyTheme(this.settings.theme);
     setLocale(this.settings.locale);
     this.provider.connect?.();
+    this.systemDownloadDir = await this.resolveSystemDownloadDir();
 
     await Promise.all([
       this.provider.setMaxActive(this.settings.maxActive),
@@ -133,6 +157,7 @@ export class App {
         upLimit: this.settings.upLimit,
       }),
       this.provider.setDownloadDir?.(this.settings.downloadDir),
+      this.pushPowerSettings(this.settings),
     ]);
 
     this.buildShell();
@@ -203,7 +228,7 @@ export class App {
     const left = el(
       'div',
       { class: 'tb-group' },
-      addButton('add-file', 'addFile', 'toolbar.addFile', () => void this.addTorrentFile()),
+      addButton('add-file', 'addFile', 'toolbar.addFile', () => this.openAddTorrentFile()),
       addButton('add-magnet', 'addLink', 'toolbar.addMagnet', () => this.openAddMagnet()),
       separator(),
       addButton('start', 'start', 'toolbar.start', () => void this.applySelectionAction('start')),
@@ -346,9 +371,17 @@ export class App {
 
   private async refresh(forceDetails = false): Promise<void> {
     try {
-      const [torrents, stats] = await Promise.all([this.provider.list(), this.provider.stats()]);
+      const powerStatus = this.provider.powerStatus
+        ? this.provider.powerStatus()
+        : Promise.resolve(null);
+      const [torrents, stats, power] = await Promise.all([
+        this.provider.list(),
+        this.provider.stats(),
+        powerStatus,
+      ]);
       this.state.torrents = torrents;
       this.state.stats = stats;
+      this.powerStatus = power;
 
       const known = new Set(torrents.map((torrent) => torrent.id));
       for (const id of [...this.state.selection]) {
@@ -404,6 +437,7 @@ export class App {
     this.renderTable();
     this.renderDetails(forceDetails);
     this.renderStatusbar();
+    this.renderPowerBanner();
     this.updateToolbarState();
   }
 
@@ -600,6 +634,67 @@ export class App {
     );
   }
 
+  /**
+   * Countdown banner. Created once and only updated afterwards, so the "Cancel"
+   * button does not jump away under the pointer on the one-second poll.
+   */
+  private renderPowerBanner(): void {
+    const status = this.powerStatus;
+    if (!status || !status.pending) {
+      if (this.powerBanner) {
+        this.powerBanner.remove();
+        this.powerBanner = null;
+      }
+      return;
+    }
+
+    if (!this.powerBanner) {
+      const cancel = el('button', {
+        class: 'btn power-cancel',
+        type: 'button',
+        text: t('power.cancel'),
+      });
+      cancel.addEventListener('click', () => {
+        void this.cancelPowerOff();
+      });
+      this.powerBanner = el(
+        'div',
+        { class: 'power-banner', role: 'alert' },
+        el('span', { class: 'power-text' }),
+        cancel,
+      );
+      document.body.appendChild(this.powerBanner);
+    }
+
+    const text = this.powerBanner.querySelector('.power-text');
+    if (!text) return;
+    const label = t(POWER_BANNER_KEYS[status.action], { seconds: status.secondsLeft });
+    text.textContent = status.dryRun ? `${label} — ${t('power.dryRun')}` : label;
+  }
+
+  /** Handing the settings to the engine; the engine owns the countdown. */
+  private pushPowerSettings(settings: AppSettings): Promise<unknown> {
+    return Promise.resolve(
+      this.provider.setPowerSettings?.({
+        action: settings.onDownloadsComplete,
+        delaySecs: settings.powerDelaySecs,
+      }),
+    ).catch((err: unknown) => {
+      console.error('[brickman-torrent] cannot apply the power settings', err);
+    });
+  }
+
+  private async cancelPowerOff(): Promise<void> {
+    try {
+      await this.provider.cancelPowerOff?.();
+    } catch (err) {
+      console.error('[brickman-torrent] cannot cancel the shutdown', err);
+    }
+    if (this.powerStatus) this.powerStatus = { ...this.powerStatus, pending: false, secondsLeft: 0 };
+    this.renderPowerBanner();
+    await this.refresh();
+  }
+
   private updateToolbarState(): void {
     const hasSelection = this.state.selection.size > 0;
     for (const id of ['start', 'pause', 'stop', 'remove']) {
@@ -746,66 +841,122 @@ export class App {
     await this.refresh();
   }
 
-  private async addTorrentFile(): Promise<void> {
-    try {
-      const torrent = await this.provider.addFile();
-      this.state.selection = new Set([torrent.id]);
-      this.state.anchorId = torrent.id;
-      this.state.filter = { kind: 'all' };
-      this.toast(t('toast.added', { name: torrent.name }));
-      await this.refresh(true);
-    } catch (err) {
-      console.error(err);
-      this.toast(t('toast.error'));
+  // ----------------------------------------------------------------- adding
+
+  /** "Add file": pick the `.torrent`, look inside it, then ask about the folder. */
+  private openAddTorrentFile(): void {
+    const picker = this.provider.pickTorrentFile;
+    if (!picker) {
+      this.showAddDialog({ mode: 'file', filePath: '', preview: null });
+      return;
     }
+    void picker
+      .call(this.provider)
+      .then((path) => {
+        // A cancelled file dialog adds nothing and opens nothing.
+        if (!path) return;
+        return this.showAddDialog({ mode: 'file', filePath: path });
+      })
+      .catch((err: unknown) => this.toast(errorText(err)));
   }
 
   private openAddMagnet(): void {
-    const input = el('input', {
-      class: 'text-input',
-      type: 'text',
-      placeholder: t('dialog.magnetPlaceholder'),
-      value: 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Sintel.2010.2160p.mkv',
-    });
-
-    openModal({
-      title: t('dialog.magnetTitle'),
-      width: 520,
-      body: el(
-        'div',
-        { class: 'form' },
-        el(
-          'label',
-          { class: 'field' },
-          el('span', { class: 'field-label', text: t('dialog.magnetLabel') }),
-          input,
-        ),
-        el('p', { class: 'hint', text: t('dialog.magnetHint') }),
-      ),
-      buttons: [
-        { label: t('common.cancel') },
-        {
-          label: t('common.add'),
-          primary: true,
-          onClick: () => {
-            void this.addMagnet(input.value);
-          },
-        },
-      ],
+    this.showAddDialog({
+      mode: 'magnet',
+      uri: 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Sintel.2010.2160p.mkv',
     });
   }
 
-  private async addMagnet(uri: string): Promise<void> {
+  /**
+   * Opens the add dialog. A `.torrent` file is previewed first, so the sub
+   * folder checkbox starts in the right state and an unreadable file is
+   * reported before the dialog is even shown.
+   */
+  private async showAddDialog(options: {
+    mode: 'file' | 'magnet';
+    filePath?: string;
+    uri?: string;
+    preview?: TorrentPreview | null;
+  }): Promise<void> {
+    let preview = options.preview;
+    if (options.mode === 'file' && options.filePath && this.provider.previewFile) {
+      try {
+        preview = await this.provider.previewFile.call(this.provider, options.filePath);
+      } catch (err) {
+        this.toast(errorText(err));
+        return;
+      }
+    }
+
+    openAddDialog({
+      provider: this.provider,
+      settings: this.settings,
+      mode: options.mode,
+      filePath: options.filePath,
+      uri: options.uri,
+      preview,
+      defaultDir: this.systemDownloadDir,
+      onSubmit: (request) => this.submitAdd(request),
+    });
+  }
+
+  /** Adds the torrent; a thrown error keeps the dialog open with its message. */
+  private async submitAdd(request: AddDialogRequest): Promise<void> {
+    const options: AddTorrentOptions = {
+      outputDir: request.outputDir || undefined,
+      createSubfolder: request.createSubfolder,
+      startPaused: request.startPaused,
+    };
+    const torrent =
+      request.mode === 'file'
+        ? await this.provider.addFile(request.filePath, options)
+        : await this.provider.addMagnet(request.uri, options);
+
+    this.state.selection = new Set([torrent.id]);
+    this.state.anchorId = torrent.id;
+    this.state.filter = { kind: 'all' };
+    this.toast(t('toast.added', { name: torrent.name }));
+
+    this.rememberFolder(request);
+    await this.refresh(true);
+  }
+
+  /**
+   * Keeps the folder of a successful add: it goes to the top of the recent list
+   * (which survives restarts with the settings) and, when the user asked for
+   * it, becomes the folder for the next torrents.
+   */
+  private rememberFolder(request: AddDialogRequest): void {
+    const used = request.outputDir || this.settings.downloadDir || this.systemDownloadDir;
+    const previousDir = this.settings.downloadDir;
+    let next: AppSettings = this.settings;
+    if (used) {
+      next = { ...next, recentFolders: withRecentFolder(next.recentFolders, used) };
+    }
+    if (request.rememberAsDefault && request.outputDir) {
+      next = { ...next, downloadDir: request.outputDir };
+    }
+    this.settings = next;
+    saveSettings(next);
+
+    if (next.downloadDir !== previousDir && next.downloadDir) {
+      void this.provider
+        .setDownloadDir?.(next.downloadDir)
+        .catch((err: unknown) =>
+          console.error('[brickman-torrent] cannot set the default folder', err),
+        );
+    }
+  }
+
+  /** System default download folder; empty when the provider has none. */
+  private async resolveSystemDownloadDir(): Promise<string> {
+    const ask = this.provider.defaultDownloadDir;
+    if (!ask) return '';
     try {
-      const torrent = await this.provider.addMagnet(uri);
-      this.state.selection = new Set([torrent.id]);
-      this.state.anchorId = torrent.id;
-      this.state.filter = { kind: 'all' };
-      this.toast(t('toast.added', { name: torrent.name }));
-      await this.refresh(true);
+      return await ask.call(this.provider);
     } catch (err) {
-      console.error(err);
-      this.toast(t('toast.error'));
+      console.warn('[brickman-torrent] cannot read the default download folder', err);
+      return '';
     }
   }
 
@@ -926,11 +1077,75 @@ export class App {
         { separator: true },
         ...queueItems,
         { separator: true },
+        ...this.folderItems(torrent),
+        { separator: true },
         { label: t('menu.remove'), action: () => this.confirmRemove([...this.state.selection]) },
       ],
       x,
       y,
     );
+  }
+
+  // --------------------------------------------------------------- folders
+
+  /**
+   * "Open folder" and "Change download folder…". The second one is refused for
+   * a torrent the engine is running: its files are open, and the core moves
+   * them to the new place.
+   */
+  private folderItems(torrent: Torrent | undefined): MenuItem[] {
+    const items: MenuItem[] = [];
+    const open = this.provider.openFolder;
+    items.push({
+      label: t('menu.openFolder'),
+      disabled: !open || !torrent,
+      title: open ? undefined : t('menu.openFolderUnavailable'),
+      action: torrent
+        ? () => {
+            void open
+              ?.call(this.provider, { id: torrent.id })
+              .catch((err: unknown) => this.toast(errorText(err)));
+          }
+        : undefined,
+    });
+
+    const change = this.provider.setTorrentOutputDir;
+    const canChange = torrent !== undefined && this.canChangeFolder(torrent);
+    items.push({
+      label: t('menu.changeFolder'),
+      disabled: !change || !canChange,
+      title: canChange ? undefined : t('menu.changeFolderHint'),
+      action:
+        torrent && change && canChange
+          ? () =>
+              openChangeFolderDialog({
+                provider: this.provider,
+                settings: this.settings,
+                torrent,
+                onDone: (result) => void this.folderChanged(result),
+              })
+          : undefined,
+    });
+    return items;
+  }
+
+  /** Only a torrent the engine is not running can be moved. */
+  private canChangeFolder(torrent: Torrent): boolean {
+    const status = effectiveStatus(torrent);
+    return status === 'paused' || status === 'queued' || status === 'stopped';
+  }
+
+  private async folderChanged(change: OutputDirChange): Promise<void> {
+    if (change.movedFiles > 0) {
+      this.toast(t('toast.movedFiles', { count: change.movedFiles }));
+    }
+    if (change.failedMoves.length > 0) {
+      this.toast(t('toast.movedFailed', { count: change.failedMoves.length }));
+    }
+    this.state.selection = new Set([change.torrent.id]);
+    this.state.anchorId = change.torrent.id;
+    this.detailId = null;
+    await this.refresh(true);
   }
 
   // -------------------------------------------------------------- settings
@@ -949,6 +1164,9 @@ export class App {
         }
       },
       version: APP_VERSION,
+      provider: this.provider,
+      defaultDir: this.systemDownloadDir,
+      onMockFinishDownloads: () => this.provider.mockHooks?.finishAllDownloads?.(),
     });
 
     openModal({
@@ -981,6 +1199,7 @@ export class App {
       this.provider.setMaxActive(next.maxActive),
       this.provider.setLimits({ downLimit: next.downLimit, upLimit: next.upLimit }),
       this.provider.setDownloadDir?.(next.downloadDir),
+      this.pushPowerSettings(next),
     ]);
 
     if (localeChanged) {

@@ -6,8 +6,13 @@ export interface ModalButton {
   label: string;
   primary?: boolean;
   danger?: boolean;
-  /** The dialog closes after the handler unless it calls the passed close(). */
-  onClick?: (close: () => void) => void;
+  /**
+   * Closes the dialog when the handler returns nothing or `true` (a resolved
+   * promise counts the same). `false` keeps the dialog open, which is what an
+   * async handler needs when its validation failed and the message is shown
+   * inside the dialog.
+   */
+  onClick?: (close: () => void) => void | boolean | Promise<void | boolean>;
 }
 
 export interface ModalOptions {
@@ -60,12 +65,24 @@ export function openModal(options: ModalOptions): ModalHandle {
       button.label,
     );
     node.addEventListener('click', () => {
-      let shouldClose = true;
-      button.onClick?.(() => {
-        shouldClose = false;
-        close();
-      });
-      if (shouldClose) close();
+      const result = button.onClick?.(() => close());
+      if (result instanceof Promise) {
+        // Async handlers (engine calls) decide themselves: `false` means the
+        // dialog stays open with an error inside it.
+        node.disabled = true;
+        void result
+          .then((keepOpen) => {
+            if (keepOpen !== false) close();
+          })
+          .catch((error: unknown) => {
+            console.error('[brickman-torrent] dialog action failed', error);
+          })
+          .finally(() => {
+            node.disabled = false;
+          });
+        return;
+      }
+      if (result !== false) close();
     });
     footer.appendChild(node);
   }

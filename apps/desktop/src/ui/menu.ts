@@ -6,6 +6,8 @@ export interface MenuItem {
   label?: string;
   shortcut?: string;
   disabled?: boolean;
+  /** Tooltip; the only way to explain why an item is disabled. */
+  title?: string;
   separator?: boolean;
   submenu?: MenuItem[];
   action?: () => void;
@@ -82,6 +84,7 @@ function buildMenu(items: MenuItem[], isSubmenu: boolean): HTMLElement {
         class: `menu-item${item.disabled ? ' disabled' : ''}${item.submenu ? ' has-sub' : ''}`,
         role: 'menuitem',
         'aria-disabled': item.disabled ? 'true' : 'false',
+        title: item.title,
         tabindex: item.disabled ? '-1' : '0',
       },
       el('span', { class: 'menu-label', text: item.label ?? '' }),

@@ -13,15 +13,23 @@ import {
   type MockTorrent,
 } from './mock-data';
 import type { TorrentProvider } from './provider';
-import type {
-  FilePriority,
-  PeerInfo,
-  SessionStats,
-  Torrent,
-  TorrentFile,
-  TorrentStatus,
-  TrackerInfo,
-  UpdateInfo,
+import {
+  POWER_DELAY_DEFAULT,
+  normalizePowerDelay,
+  type AddTorrentOptions,
+  type FilePriority,
+  type OutputDirChange,
+  type PeerInfo,
+  type PowerAction,
+  type PowerSettings,
+  type PowerStatus,
+  type SessionStats,
+  type Torrent,
+  type TorrentFile,
+  type TorrentPreview,
+  type TorrentStatus,
+  type TrackerInfo,
+  type UpdateInfo,
 } from './types';
 import { APP_VERSION } from './version';
 
@@ -29,6 +37,24 @@ const LABEL_CYCLE = ['Linux', 'Movies', 'Music', 'Docs', 'Software'];
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
+
+/** Folders the mock pretends to be able to write to (`Z:\nope` is refused). */
+const AVAILABLE_DRIVES = ['C', 'D', 'E'];
+
+/**
+ * Joins a folder and a name the way the engine does. `outputDir` is empty in a
+ * plain browser, so the mock has a placeholder root instead of a real path.
+ */
+function joinPath(folder: string, name: string): string {
+  const separator = folder.includes('\\') ? '\\' : '/';
+  const trimmed = folder.replace(/[\\/]+$/, '');
+  return trimmed ? `${trimmed}${separator}${name}` : name;
+}
+
+function baseName(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1]! : path;
+}
 
 export class MockProvider implements TorrentProvider {
   readonly kind = 'mock' as const;
@@ -38,6 +64,10 @@ export class MockProvider implements TorrentProvider {
       this.updateAvailable = available;
     },
     isUpdateAvailable: (): boolean => this.updateAvailable,
+    /** Pretends every torrent reached 100 % (the power settings demo). */
+    finishAllDownloads: (): void => {
+      this.finishAllDownloads();
+    },
   };
 
   private torrents: MockTorrent[] = createInitialTorrents();
@@ -48,6 +78,12 @@ export class MockProvider implements TorrentProvider {
   private updateAvailable = true;
   private tickHandle: number | null = null;
   private addCounter = 0;
+  // "Power off when downloads finish", mirrored from the Rust monitor.
+  private powerAction: PowerAction = 'nothing';
+  private powerDelaySecs = POWER_DELAY_DEFAULT;
+  private powerDeadline: number | null = null;
+  private powerCompleted = false;
+  private readonly powerSeen = new Map<string, boolean>();
 
   constructor() {
     for (const torrent of this.torrents) {
@@ -69,6 +105,7 @@ export class MockProvider implements TorrentProvider {
   }
 
   async list(): Promise<Torrent[]> {
+    this.evaluatePower();
     return this.torrents.map((torrent) => this.snapshot(torrent));
   }
 
@@ -89,25 +126,90 @@ export class MockProvider implements TorrentProvider {
     };
   }
 
-  async addFile(name?: string): Promise<Torrent> {
+  async addFile(name?: string, options?: AddTorrentOptions): Promise<Torrent> {
     this.addCounter += 1;
     const label = LABEL_CYCLE[this.addCounter % LABEL_CYCLE.length] ?? 'Docs';
-    const torrentName = name?.trim() || `new-torrent-${this.addCounter}.torrent`;
-    return this.insert(torrentName, label, 900 * 1024 * 1024);
+    const file = name?.trim() ? baseName(name.trim()) : `new-torrent-${this.addCounter}`;
+    const torrentName = file.replace(/\.torrent$/i, '');
+    return this.insert(torrentName, label, 900 * 1024 * 1024, options);
   }
 
-  async addMagnet(uri?: string): Promise<Torrent> {
+  async addMagnet(uri?: string, options?: AddTorrentOptions): Promise<Torrent> {
     this.addCounter += 1;
     const match = uri?.match(/[?&]dn=([^&]+)/);
     const decoded = match?.[1] ? decodeURIComponent(match[1].replace(/\+/g, ' ')) : '';
     const label = LABEL_CYCLE[this.addCounter % LABEL_CYCLE.length] ?? 'Other';
-    return this.insert(decoded || `magnet-torrent-${this.addCounter}`, label, 1.8 * 1024 * 1024 * 1024);
+    return this.insert(
+      decoded || `magnet-torrent-${this.addCounter}`,
+      label,
+      1.8 * 1024 * 1024 * 1024,
+      options,
+    );
+  }
+
+  /**
+   * The browser has no file dialog: the mock answers with a fixed path so the
+   * add flow (preview, folder, sub folder) is the same as in the desktop app.
+   */
+  async pickTorrentFile(): Promise<string | null> {
+    return 'C:\\Users\\you\\Downloads\\ubuntu-24.04.3-desktop-amd64.iso.torrent';
+  }
+
+  /** A single-file torrent is an `.iso`; everything else is multi-file. */
+  async previewFile(name: string): Promise<TorrentPreview> {
+    const file = baseName(name);
+    const single = /\.iso$/i.test(file);
+    return {
+      name: file.replace(/\.torrent$/i, ''),
+      files: single ? 1 : 3,
+    };
+  }
+
+  /** Mimics the Rust check: the same messages, no filesystem access. */
+  async validateDir(dir: string): Promise<void> {
+    const path = dir.trim();
+    if (!path) throw new Error('download folder is empty');
+    const drive = /^([A-Za-z]):[\\/]/.exec(path)?.[1]?.toUpperCase();
+    if (drive && !AVAILABLE_DRIVES.includes(drive)) {
+      throw new Error(`drive ${drive}: is not available`);
+    }
+  }
+
+  async defaultDownloadDir(): Promise<string> {
+    return 'C:\\Users\\you\\Downloads';
+  }
+
+  async openFolder(target: { id?: string; path?: string }): Promise<void> {
+    const torrent = target.id
+      ? this.torrents.find((item) => item.id === target.id)
+      : undefined;
+    console.info(
+      '[brickman-torrent][mock] would open folder:',
+      target.path ?? torrent?.savePath ?? '(unknown)',
+    );
+  }
+
+  /** Refuses a running torrent, exactly like the core does. */
+  async setTorrentOutputDir(id: string, dir: string): Promise<OutputDirChange> {
+    const torrent = this.torrents.find((item) => item.id === id);
+    if (!torrent) throw new Error(`torrent ${id} not found`);
+    if (!['paused', 'stopped'].includes(torrent.status) && !torrent.queued) {
+      throw new Error('stop the torrent before changing its download folder');
+    }
+    const folder = dir.trim();
+    if (!folder) throw new Error('download folder is empty');
+    await this.validateDir(folder);
+    torrent.savePath = joinPath(folder, torrent.name.replace(/\.torrent$/i, ''));
+    this.afterMutation();
+    return { torrent: this.snapshot(torrent), movedFiles: 0, failedMoves: [] };
   }
 
   async start(ids: string[]): Promise<void> {
     for (const torrent of this.pick(ids)) {
       torrent.status = torrent.progress >= 1 ? 'seeding' : 'downloading';
     }
+    // A lifted pause means downloads are running again: no countdown.
+    this.powerDeadline = null;
     this.afterMutation();
   }
 
@@ -209,7 +311,101 @@ export class MockProvider implements TorrentProvider {
     console.info('[brickman-torrent][mock] would open external URL:', url);
   }
 
+  // ------------------------------------------------- power after downloads
+
+  async setPowerSettings(settings: PowerSettings): Promise<PowerStatus> {
+    this.powerAction = settings.action;
+    this.powerDelaySecs = normalizePowerDelay(settings.delaySecs);
+    // A changed setting drops the running countdown, like the Rust side does.
+    this.powerDeadline = null;
+    return this.powerStatus();
+  }
+
+  async powerStatus(): Promise<PowerStatus> {
+    this.evaluatePower();
+    return {
+      action: this.powerAction,
+      delaySecs: this.powerDelaySecs,
+      pending: this.powerDeadline !== null,
+      secondsLeft: this.powerSecondsLeft(),
+      // The mock never runs anything: it always behaves like a dry run.
+      dryRun: true,
+    };
+  }
+
+  async cancelPowerOff(): Promise<PowerStatus> {
+    this.powerDeadline = null;
+    this.powerCompleted = false;
+    console.info('[brickman-torrent][mock] power countdown cancelled');
+    return this.powerStatus();
+  }
+
   // ---------------------------------------------------------------- internals
+
+  private powerSecondsLeft(): number {
+    if (this.powerDeadline === null) return 0;
+    return Math.max(0, Math.ceil((this.powerDeadline - Date.now()) / 1000));
+  }
+
+  /**
+   * Same rule as the Rust monitor: every torrent has to be at 100 % and at
+   * least one of them has to have finished while this page was open. With no
+   * such transition the countdown never starts, so a restored list stays quiet.
+   */
+  private evaluatePower(): void {
+    const allComplete = this.torrents.length > 0 && this.torrents.every((t) => t.progress >= 1);
+    for (const torrent of this.torrents) {
+      const complete = torrent.progress >= 1;
+      const previous = this.powerSeen.get(torrent.id);
+      if (previous === false && complete) this.powerCompleted = true;
+      this.powerSeen.set(torrent.id, complete);
+    }
+    for (const id of [...this.powerSeen.keys()]) {
+      if (!this.torrents.some((torrent) => torrent.id === id)) this.powerSeen.delete(id);
+    }
+
+    const condition = allComplete && this.powerCompleted && this.powerAction !== 'nothing';
+    if (!condition) {
+      this.powerDeadline = null;
+      return;
+    }
+    if (this.powerDeadline === null) {
+      this.powerDeadline = Date.now() + this.powerDelaySecs * 1000;
+      console.info(
+        '[brickman-torrent][mock] power countdown started:',
+        this.powerAction,
+        `${this.powerDelaySecs} s`,
+      );
+      return;
+    }
+    if (Date.now() >= this.powerDeadline) {
+      this.powerDeadline = null;
+      this.powerCompleted = false;
+      console.info(
+        '[brickman-torrent][mock] DRYRUN: would run the power action',
+        this.powerAction,
+      );
+    }
+  }
+
+  /** Marks every torrent as downloaded, as if the downloads just finished. */
+  private finishAllDownloads(): void {
+    for (const torrent of this.torrents) {
+      torrent.progress = 1;
+      torrent.downloaded = torrent.size;
+      torrent.status = 'seeding';
+      torrent.downSpeed = 0;
+      torrent.etaSec = null;
+      torrent.pieces.have = torrent.pieces.total;
+      for (const file of this.fileMap.get(torrent.id) ?? []) {
+        file.progress = 1;
+        file.downloaded = file.size;
+      }
+    }
+    this.powerCompleted = true;
+    this.powerDeadline = null;
+    this.recomputeQueue();
+  }
 
   private pick(ids: string[]): MockTorrent[] {
     const wanted = new Set(ids);
@@ -223,13 +419,23 @@ export class MockProvider implements TorrentProvider {
     return { ...torrent, ordinal, priority: ordinal, pieces: { ...torrent.pieces } };
   }
 
-  private insert(name: string, label: string, size: number): Torrent {
+  private insert(
+    name: string,
+    label: string,
+    size: number,
+    options?: AddTorrentOptions,
+  ): Torrent {
+    const outputDir = options?.outputDir?.trim() ?? '';
+    const subfolder = options?.createSubfolder ?? true;
+    const folder = outputDir || `D:\\Torrents\\${label}`;
+    // The add dialog's "start paused" is a user pause, like in the core.
+    const status: TorrentStatus = options?.startPaused ? 'paused' : 'downloading';
     const torrent: MockTorrent = {
       id: `mock-new-${Date.now().toString(36)}-${this.addCounter}`,
       ordinal: this.torrents.length + 1,
       name,
       size: Math.round(size),
-      status: 'downloading',
+      status,
       progress: 0,
       downSpeed: 0,
       upSpeed: 0,
@@ -245,7 +451,7 @@ export class MockProvider implements TorrentProvider {
       downloaded: 0,
       uploaded: 0,
       ratio: 0,
-      savePath: `D:\\Torrents\\${label}`,
+      savePath: subfolder ? joinPath(folder, name.replace(/\.torrent$/i, '')) : folder,
       hash: hexHash(`${name}:${Date.now()}`),
       pieces: { have: 0, total: Math.max(64, Math.round(size / (1024 * 1024))) },
       connections: 0,
@@ -256,6 +462,8 @@ export class MockProvider implements TorrentProvider {
     };
     this.torrents.push(torrent);
     this.fileMap.set(torrent.id, buildFiles(torrent));
+    // A new download is a reason to stop a running "power off" countdown.
+    this.powerDeadline = null;
     this.afterMutation();
     return this.snapshot(torrent);
   }

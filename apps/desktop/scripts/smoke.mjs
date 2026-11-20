@@ -282,6 +282,139 @@ check('RU locale switches table header', ruHeader.includes('Имя'), ruHeader);
 await page.locator('.tb-select').selectOption('en');
 await page.waitForTimeout(300);
 
+// --- add dialog: folder, recent folders, validation ---------------------
+const FOLDER = 'C:\\Temp\\Моя папка';
+const openAddFile = async () => {
+  await page.locator('.tb-btn[aria-label="Add file"]').click();
+  await page.waitForSelector('.modal-overlay .add-form');
+};
+const folderInput = () => page.locator('.modal .folder-input');
+const folderError = () => page.locator('.modal .field-error').innerText().catch(() => '');
+const addPrimary = () => page.locator('.modal-footer .btn.primary').click();
+
+await openAddFile();
+check(
+  'the add dialog starts with an empty folder when nothing was used yet',
+  (await folderInput().inputValue()) === '',
+  await folderInput().inputValue(),
+);
+check(
+  'the recent folders list is empty before the first add',
+  (await page.locator('.modal datalist option').count()) === 0,
+);
+
+// A folder that does not exist must be explained inside the dialog.
+await folderInput().fill('Z:\\nope');
+await addPrimary();
+await page.waitForTimeout(400);
+check(
+  'a missing drive keeps the add dialog open',
+  (await page.locator('.modal-overlay').count()) === 1,
+);
+const missingDriveError = await folderError();
+check(
+  'a missing drive is explained in the dialog, not as a failed start',
+  /drive Z: is not available/i.test(missingDriveError),
+  missingDriveError,
+);
+
+// The same directory the live test uses: a space and Cyrillic in the name.
+await folderInput().fill(FOLDER);
+await addPrimary();
+await page.waitForTimeout(700);
+check(
+  'the dialog closes after a successful add',
+  (await page.locator('.modal-overlay').count()) === 0,
+);
+check('the torrent was added to the table', (await rowCount()) === 16, String(await rowCount()));
+
+const storedSettings = await page.evaluate(() => {
+  const raw = localStorage.getItem('brickman-torrent.settings.v1');
+  return raw ? JSON.parse(raw) : null;
+});
+check(
+  'the folder of the add is persisted as a recent folder',
+  Array.isArray(storedSettings?.recentFolders) && storedSettings.recentFolders[0] === FOLDER,
+  JSON.stringify(storedSettings?.recentFolders),
+);
+
+await openAddFile();
+const recentOptions = await page.$$eval('.modal datalist option', (nodes) =>
+  nodes.map((node) => node.value),
+);
+check(
+  'the add dialog starts with the last used folder',
+  (await folderInput().inputValue()) === FOLDER,
+  await folderInput().inputValue(),
+);
+check(
+  'the last folder is offered in the recent folders list',
+  recentOptions.includes(FOLDER),
+  recentOptions.join(' | '),
+);
+await page.getByRole('button', { name: 'Cancel' }).click();
+await page.waitForTimeout(200);
+
+// --- context menu: folder commands --------------------------------------
+const openMenuOnRowWithStatus = async (status) => {
+  const found = await page.evaluate((wanted) => {
+    const rows = [...document.querySelectorAll('tr[data-id]')];
+    const row = rows.find(
+      (node) => node.querySelector('td.status-cell')?.textContent?.trim() === wanted,
+    );
+    if (!row) return false;
+    row.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, clientX: 320, clientY: 220 }),
+    );
+    return true;
+  }, status);
+  await page.waitForSelector('.ctx-menu');
+  return found;
+};
+const menuItem = (label) =>
+  page.evaluate((wanted) => {
+    const item = [...document.querySelectorAll('.ctx-menu .menu-item')].find(
+      (node) => node.querySelector('.menu-label')?.textContent?.trim() === wanted,
+    );
+    if (!item) return null;
+    return {
+      disabled: item.classList.contains('disabled'),
+      ariaDisabled: item.getAttribute('aria-disabled'),
+      title: item.getAttribute('title') ?? '',
+    };
+  }, label);
+
+check('a downloading row offers the folder menu', await openMenuOnRowWithStatus('Downloading'));
+const activeChange = await menuItem('Change download folder…');
+check(
+  '"Change download folder…" is disabled for an active torrent',
+  activeChange?.disabled === true && activeChange?.ariaDisabled === 'true',
+  JSON.stringify(activeChange),
+);
+check(
+  'the disabled entry says what to do',
+  /Stop the torrent/i.test(activeChange?.title ?? ''),
+  activeChange?.title,
+);
+const activeOpen = await menuItem('Open folder');
+check(
+  '"Open folder" stays available for an active torrent',
+  activeOpen?.disabled === false,
+  JSON.stringify(activeOpen),
+);
+await page.keyboard.press('Escape');
+await page.waitForTimeout(150);
+
+check('a stopped row offers the folder menu', await openMenuOnRowWithStatus('Stopped'));
+const stoppedChange = await menuItem('Change download folder…');
+check(
+  '"Change download folder…" is enabled for a stopped torrent',
+  stoppedChange?.disabled === false,
+  JSON.stringify(stoppedChange),
+);
+await page.keyboard.press('Escape');
+await page.waitForTimeout(150);
+
 check('no console/page errors', errors.length === 0, errors.join(' | '));
 
 await browser.close();

@@ -3,11 +3,16 @@
 
 import type { TorrentProvider } from './provider';
 import type {
+  AddTorrentOptions,
   FilePriority,
+  OutputDirChange,
   PeerInfo,
+  PowerSettings,
+  PowerStatus,
   SessionStats,
   Torrent,
   TorrentFile,
+  TorrentPreview,
   TrackerInfo,
   UpdateInfo,
 } from './types';
@@ -39,8 +44,21 @@ export async function createTauriProvider(
     list: () => call<Torrent[]>('list_torrents'),
     stats: () => call<SessionStats>('get_session_stats'),
 
-    addFile: (name) => call<Torrent>('add_torrent_file', { name: name ?? null }),
-    addMagnet: (uri) => call<Torrent>('add_magnet', { uri: uri ?? null }),
+    addFile: (name, addOptions) =>
+      call<Torrent>('add_torrent_file', { name: name ?? null, ...addArgs(addOptions) }),
+    addMagnet: (uri, addOptions) =>
+      call<Torrent>('add_magnet', { uri: uri ?? null, ...addArgs(addOptions) }),
+    previewFile: (name) => call<TorrentPreview>('preview_torrent_file', { name }),
+
+    pickTorrentFile: () => call<string | null>('pick_torrent_file'),
+    pickFolder: () => call<string | null>('pick_directory'),
+    firstDirectory: (paths) => call<string | null>('first_directory', { paths }),
+
+    validateDir: (dir) => call<void>('validate_download_dir', { path: dir }),
+    defaultDownloadDir: () => call<string>('default_download_folder'),
+    openFolder: (target) =>
+      call<void>('open_folder', { id: target.id ?? null, path: target.path ?? null }),
+    setTorrentOutputDir: (id, dir) => call<OutputDirChange>('set_torrent_output_dir', { id, dir }),
 
     start: (ids) => call<void>('resume_torrents', { ids }),
     pause: (ids) => call<void>('pause_torrents', { ids }),
@@ -60,6 +78,14 @@ export async function createTauriProvider(
 
     checkForUpdates: () => call<UpdateInfo>('check_for_updates'),
 
+    powerStatus: () => call<PowerStatus>('get_power_status'),
+    setPowerSettings: (settings: PowerSettings) =>
+      call<PowerStatus>('set_power_settings', {
+        action: settings.action,
+        delaySecs: settings.delaySecs,
+      }),
+    cancelPowerOff: () => call<PowerStatus>('cancel_power_off'),
+
     openExternal: async (url: string) => {
       await call<void>('open_external', { url });
     },
@@ -68,4 +94,13 @@ export async function createTauriProvider(
   // Keep the version used by the update dialog in sync with the crate version.
   console.info('[brickman-torrent] tauri provider ready, app version', APP_VERSION);
   return provider;
+}
+
+/** The add commands take the per-add choices as flat camelCase arguments. */
+function addArgs(options?: AddTorrentOptions): Record<string, unknown> {
+  return {
+    outputDir: options?.outputDir?.trim() || null,
+    createSubfolder: options?.createSubfolder ?? null,
+    startPaused: options?.startPaused ?? null,
+  };
 }

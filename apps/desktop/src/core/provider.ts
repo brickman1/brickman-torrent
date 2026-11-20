@@ -1,9 +1,14 @@
 import type {
+  AddTorrentOptions,
   FilePriority,
+  OutputDirChange,
   PeerInfo,
+  PowerSettings,
+  PowerStatus,
   SessionStats,
   Torrent,
   TorrentFile,
+  TorrentPreview,
   TrackerInfo,
   UpdateInfo,
 } from './types';
@@ -21,8 +26,25 @@ export interface TorrentProvider {
   list(): Promise<Torrent[]>;
   stats(): Promise<SessionStats>;
 
-  addFile(name?: string): Promise<Torrent>;
-  addMagnet(uri?: string): Promise<Torrent>;
+  addFile(name?: string, options?: AddTorrentOptions): Promise<Torrent>;
+  addMagnet(uri?: string, options?: AddTorrentOptions): Promise<Torrent>;
+  /** Reads a `.torrent` file without adding it (name and file count). */
+  previewFile?(name: string): Promise<TorrentPreview>;
+
+  /** Native pickers; absent when the UI runs in a plain browser. */
+  pickTorrentFile?(): Promise<string | null>;
+  pickFolder?(): Promise<string | null>;
+  /** First dropped path that is a directory (drag and drop of a folder). */
+  firstDirectory?(paths: string[]): Promise<string | null>;
+
+  /** Resolves when the folder can be used, rejects with a readable message. */
+  validateDir?(dir: string): Promise<void>;
+  /** System default download folder, shown when the setting is empty. */
+  defaultDownloadDir?(): Promise<string>;
+  /** Opens a folder (or reveals a file) in the file manager. */
+  openFolder?(target: { id?: string; path?: string }): Promise<void>;
+  /** Moves a stopped torrent to another folder; keeps the queue position. */
+  setTorrentOutputDir?(id: string, dir: string): Promise<OutputDirChange>;
 
   start(ids: string[]): Promise<void>;
   pause(ids: string[]): Promise<void>;
@@ -45,6 +67,15 @@ export interface TorrentProvider {
   checkForUpdates(): Promise<UpdateInfo>;
   openExternal(url: string): Promise<void>;
 
+  /**
+   * "Power off when downloads finish": the settings and the countdown state.
+   * The countdown itself lives in the engine (Rust); the UI only shows it.
+   */
+  powerStatus?(): Promise<PowerStatus>;
+  setPowerSettings?(settings: PowerSettings): Promise<PowerStatus | void>;
+  /** The "Cancel" button of the countdown banner. */
+  cancelPowerOff?(): Promise<PowerStatus | void>;
+
   /** Optional engine lifecycle hooks (mock provider only). */
   connect?(): void;
   disconnect?(): void;
@@ -53,5 +84,7 @@ export interface TorrentProvider {
   readonly mockHooks?: {
     setUpdateAvailable(available: boolean): void;
     isUpdateAvailable(): boolean;
+    /** Demo hook: pretends every torrent reached 100 % (power-off banner). */
+    finishAllDownloads?(): void;
   };
 }

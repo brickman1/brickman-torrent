@@ -5,6 +5,9 @@
 //! device names. Every file of a torrent is validated before the torrent is
 //! handed to the engine, and the torrent is refused if anything looks unsafe.
 
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::error::Error;
 
 /// Characters that Windows cannot store in a file name.
@@ -125,6 +128,49 @@ pub fn validate_torrent_files(name: Option<&str>, files: &[Vec<String>]) -> Resu
         let joined = components.join("/");
         validate_relative_path(&joined)?;
     }
+    Ok(())
+}
+
+/// Name prefix of the probe file written by [`validate_output_dir`].
+const PROBE_PREFIX: &str = ".brickman-write-test";
+
+/// Checks that `dir` is usable as a download folder.
+///
+/// The folder is created when it is missing and a probe file is written and
+/// removed, so a missing drive, a path that runs through a regular file and a
+/// folder without write permission are reported here, before the engine starts
+/// and fails with a message nobody can act on.
+pub fn validate_output_dir(dir: &Path) -> Result<(), Error> {
+    if dir.as_os_str().is_empty() {
+        return Err(Error::InvalidArgument("download folder is empty".to_string()));
+    }
+    std::fs::create_dir_all(dir).map_err(|error| {
+        Error::InvalidArgument(format!(
+            "cannot use {} as a download folder: {error}",
+            dir.display()
+        ))
+    })?;
+
+    static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
+    let probe = dir.join(format!(
+        "{PROBE_PREFIX}-{}-{}",
+        std::process::id(),
+        PROBE_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let write = || -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&probe)?;
+        std::io::Write::write_all(&mut file, b"probe")?;
+        file.sync_all()
+    };
+    let failure = |error: std::io::Error| {
+        let _ = std::fs::remove_file(&probe);
+        Error::InvalidArgument(format!(
+            "cannot write to {}: {error}",
+            dir.display()
+        ))
+    };
+    write().map_err(failure)?;
+    std::fs::remove_file(&probe).map_err(failure)?;
     Ok(())
 }
 
@@ -257,5 +303,68 @@ mod tests {
             validate_torrent_files(None, &nested),
             Err(Error::UnsafePath { .. })
         ));
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "tccore-paths-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn accepts_and_creates_a_download_folder() {
+        let base = temp_dir("output-dir");
+        let nested = base.join("Моя папка").join("with space");
+        assert!(validate_output_dir(&nested).is_ok());
+        assert!(nested.is_dir());
+        // The probe file is removed again.
+        let leftovers: Vec<String> = std::fs::read_dir(&nested)
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(leftovers.is_empty(), "leftovers: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rejects_an_empty_download_folder() {
+        assert!(matches!(
+            validate_output_dir(Path::new("")),
+            Err(Error::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_a_folder_that_cannot_be_created() {
+        let base = temp_dir("output-dir-file");
+        // A regular file in the middle of the path: it can never become a folder.
+        let blocker = base.join("blocker");
+        std::fs::write(&blocker, b"not a folder").expect("write blocker");
+        let error = validate_output_dir(&blocker.join("child")).expect_err("must fail");
+        let message = error.to_string();
+        assert!(
+            message.contains("cannot use") && message.contains("blocker"),
+            "{message}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rejects_a_folder_on_a_missing_drive() {
+        // `Z:` is not mapped on the development machine; skip where it is.
+        if Path::new(r"Z:\").exists() {
+            return;
+        }
+        let error = validate_output_dir(Path::new(r"Z:\nope")).expect_err("must fail");
+        let message = error.to_string();
+        assert!(
+            message.contains(r"Z:\nope") && message.contains("cannot use"),
+            "{message}"
+        );
     }
 }

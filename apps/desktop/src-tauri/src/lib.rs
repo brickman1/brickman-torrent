@@ -11,13 +11,15 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use brickman_core::{
-    AddOptions, Downloader, DownloaderOptions, SessionView, Source, TorrentId, TorrentState,
-    TorrentView, default_data_dir, default_download_dir, now_ms,
+    AddOptions, Downloader, DownloaderOptions, OutputDirChange, SessionView, Source, TorrentId,
+    TorrentState, TorrentView, default_data_dir, default_download_dir, now_ms,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
+
+mod power;
 
 /// Release feed checked by `check_for_updates`.
 const UPDATE_URL: &str = "https://api.github.com/repos/brickman1/brickman-torrent/releases/latest";
@@ -127,6 +129,24 @@ struct UpdateDto {
     checked_at: u64,
 }
 
+/// Answer of `set_torrent_output_dir`: the torrent snapshot plus what happened
+/// to the files that were already on disk.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OutputDirChangeDto {
+    torrent: TorrentDto,
+    moved_files: u32,
+    failed_moves: Vec<String>,
+}
+
+/// What a `.torrent` file contains, without adding it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TorrentPreviewDto {
+    name: String,
+    files: u32,
+}
+
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
     #[serde(default)]
@@ -154,6 +174,14 @@ struct Engine {
     peer_samples: Mutex<HashMap<(u32, String), PeerSample>>,
 }
 
+/// Where and how a new torrent is added (per-add overrides of the settings).
+#[derive(Debug, Clone, Default)]
+struct AddRequest {
+    output_dir: Option<PathBuf>,
+    create_subfolder: Option<bool>,
+    start_paused: bool,
+}
+
 impl Engine {
     fn new(data_dir: PathBuf, download_dir: PathBuf) -> Result<Self, String> {
         let downloader = Downloader::new(DownloaderOptions::new(data_dir, download_dir.clone()))
@@ -170,21 +198,22 @@ impl Engine {
     }
 
     fn set_add_dir(&self, dir: PathBuf) -> Result<(), String> {
-        std::fs::create_dir_all(&dir)
-            .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
+        brickman_core::validate_output_dir(&dir).map_err(user_message)?;
         *lock(&self.add_dir) = dir;
         Ok(())
     }
 
-    fn add(&self, source: Source) -> Result<u32, String> {
+    fn add(&self, source: Source, request: AddRequest) -> Result<u32, String> {
         let options = AddOptions {
-            output_dir: Some(self.add_dir()),
+            output_dir: Some(request.output_dir.unwrap_or_else(|| self.add_dir())),
+            create_subfolder: request.create_subfolder,
+            start_paused: request.start_paused,
             ..Default::default()
         };
         self.downloader
             .add(source, options)
             .map(|id| id.0)
-            .map_err(|error| error.to_string())
+            .map_err(user_message)
     }
 
     /// Fresh snapshot of one torrent, used as the return value of the add
@@ -200,12 +229,22 @@ impl Engine {
     }
 }
 
-#[derive(Default)]
+/// Errors of the core carry a prefix (`invalid argument: …`) that only means
+/// something to a programmer; the UI shows the rest as it is.
+fn user_message(error: brickman_core::Error) -> String {
+    match error {
+        brickman_core::Error::InvalidArgument(message) => message,
+        other => other.to_string(),
+    }
+}
+
 struct AppState {
     engine: tokio::sync::Mutex<Option<Arc<Engine>>>,
     /// `.torrent` files passed on the command line; added once the UI told us
     /// where to download to.
     pending: Mutex<Vec<PathBuf>>,
+    /// Shut down / sleep once every download has finished.
+    power: Arc<power::PowerState>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -351,7 +390,7 @@ async fn engine_init(
     let engine = run_blocking(move || {
         let engine = Engine::new(data_dir, download_dir)?;
         for path in pending {
-            match engine.add(Source::TorrentFile(path.clone())) {
+            match engine.add(Source::TorrentFile(path.clone()), AddRequest::default()) {
                 Ok(id) => eprintln!("[brickman-torrent] added {} as #{id}", path.display()),
                 Err(error) => {
                     eprintln!("[brickman-torrent] cannot add {}: {error}", path.display());
@@ -377,9 +416,149 @@ async fn set_download_dir(dir: String, state: State<'_, AppState>) -> Result<(),
     run_blocking(move || engine.set_add_dir(PathBuf::from(dir))).await
 }
 
+/// The system default download folder, so the settings can show the real path
+/// when the field is empty.
+#[tauri::command]
+fn default_download_folder() -> String {
+    default_download_dir().to_string_lossy().into_owned()
+}
+
+/// Checks a download folder before anything is added: the folder is created when
+/// missing and a probe file is written and removed, so "no such drive", "path is
+/// a file" and "no write permission" come back as readable text.
+#[tauri::command]
+async fn validate_download_dir(path: String) -> Result<(), String> {
+    run_blocking(move || {
+        brickman_core::validate_output_dir(std::path::Path::new(path.trim()))
+            .map_err(user_message)
+    })
+    .await
+}
+
+/// Native folder picker. Returns `None` when the user cancelled.
+#[tauri::command]
+async fn pick_directory(app: AppHandle) -> Result<Option<String>, String> {
+    run_blocking(move || {
+        // The dialog is modal to the window, so the call must not run on the UI
+        // thread.
+        let picked = app.dialog().file().blocking_pick_folder();
+        Ok(picked
+            .and_then(|folder| folder.into_path().ok())
+            .map(|folder| folder.to_string_lossy().into_owned()))
+    })
+    .await
+}
+
+/// First entry of `paths` that is a directory; used for dropping a folder on
+/// the window (files are not part of this feature).
+#[tauri::command]
+async fn first_directory(paths: Vec<String>) -> Result<Option<String>, String> {
+    run_blocking(move || {
+        Ok(paths
+            .into_iter()
+            .find(|path| std::path::Path::new(path).is_dir()))
+    })
+    .await
+}
+
+/// Opens a folder in the file manager. With `id` the folder of that torrent is
+/// opened; a single-file torrent reveals the file itself.
+#[tauri::command]
+async fn open_folder(
+    id: Option<String>,
+    path: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let engine = engine(&state).await?;
+    run_blocking(move || {
+        let target = match (id, path) {
+            (Some(raw), _) => torrent_folder(&engine, &raw)?,
+            (None, Some(path)) if !path.trim().is_empty() => PathBuf::from(path.trim()),
+            _ => return Err("no folder given".to_string()),
+        };
+        if target.is_dir() {
+            app.opener()
+                .open_path(target.to_string_lossy().as_ref(), None::<&str>)
+                .map_err(|error| format!("cannot open {}: {error}", target.display()))
+        } else if target.is_file() {
+            app.opener()
+                .reveal_item_in_dir(&target)
+                .map_err(|error| format!("cannot open {}: {error}", target.display()))
+        } else {
+            Err(format!("folder not found: {}", target.display()))
+        }
+    })
+    .await
+}
+
+/// The path to open for a torrent: the single file when it has exactly one
+/// (revealed in its folder), otherwise the torrent's folder.
+fn torrent_folder(engine: &Engine, raw: &str) -> Result<PathBuf, String> {
+    let id = raw
+        .trim()
+        .parse::<u32>()
+        .map(TorrentId)
+        .map_err(|_| format!("invalid torrent id {raw:?}"))?;
+    let views = engine.downloader.list();
+    let view = views
+        .iter()
+        .find(|view| view.id == id)
+        .ok_or_else(|| format!("torrent #{id} is not managed by the engine"))?;
+    let files = engine
+        .downloader
+        .files(id)
+        .map_err(|error| error.to_string())?;
+    if files.len() == 1 {
+        let relative = files[0].path.replace('/', std::path::MAIN_SEPARATOR_STR);
+        let single = view.save_path.join(relative);
+        if single.is_file() {
+            return Ok(single);
+        }
+    }
+    Ok(view.save_path.clone())
+}
+
+/// Moves a stopped torrent to another download folder.
+#[tauri::command]
+async fn set_torrent_output_dir(
+    id: String,
+    dir: String,
+    state: State<'_, AppState>,
+) -> Result<OutputDirChangeDto, String> {
+    let engine = engine(&state).await?;
+    let torrent_id = parse_ids(&[id])?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "missing torrent id".to_string())?;
+    let dir = dir.trim().to_string();
+    if dir.is_empty() {
+        return Err("empty download folder".to_string());
+    }
+    let dir = PathBuf::from(dir);
+
+    run_blocking(move || {
+        let OutputDirChange {
+            id: new_id,
+            moved_files,
+            failed_moves,
+        } = engine
+            .downloader
+            .set_output_dir(torrent_id, &dir)
+            .map_err(user_message)?;
+        Ok(OutputDirChangeDto {
+            torrent: engine.snapshot(new_id.0)?,
+            moved_files: u32::try_from(moved_files).unwrap_or(u32::MAX),
+            failed_moves,
+        })
+    })
+    .await
+}
+
 #[tauri::command]
 async fn list_torrents(state: State<'_, AppState>) -> Result<Vec<TorrentDto>, String> {
     let engine = engine(&state).await?;
+    let monitor = Arc::clone(&state.power);
     run_blocking(move || {
         // The UI polls once per second; that is also what keeps the queue
         // moving (a torrent added during its initial check stays paused until
@@ -387,9 +566,26 @@ async fn list_torrents(state: State<'_, AppState>) -> Result<Vec<TorrentDto>, St
         if let Err(error) = engine.downloader.tick() {
             eprintln!("[brickman-torrent] queue tick failed: {error}");
         }
-        Ok(engine
-            .downloader
-            .list()
+        let views = engine.downloader.list();
+
+        // The same poll drives the "power off when done" monitor. A torrent
+        // counts as finished only when the engine says so; a paused or stopped
+        // torrent that never reached 100 % keeps the condition false.
+        let progress: Vec<power::TorrentProgress> = views
+            .iter()
+            .map(|view| power::TorrentProgress {
+                id: view.id.0,
+                complete: matches!(view.state, TorrentState::Seeding | TorrentState::Done)
+                    || view.progress >= 0.999,
+            })
+            .collect();
+        if let Some(command) = monitor.observe(&progress)
+            && let Err(error) = power::run(&command, monitor.log_path())
+        {
+            eprintln!("[brickman-torrent] power action failed: {error}");
+        }
+
+        Ok(views
             .iter()
             .enumerate()
             .map(|(index, view)| torrent_dto(index, view))
@@ -407,6 +603,9 @@ async fn get_session_stats(state: State<'_, AppState>) -> Result<SessionStatsDto
 #[tauri::command]
 async fn add_torrent_file(
     name: Option<String>,
+    output_dir: Option<String>,
+    create_subfolder: Option<bool>,
+    start_paused: Option<bool>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<TorrentDto, String> {
@@ -414,20 +613,33 @@ async fn add_torrent_file(
     let name = name
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty());
+    let request = AddRequest {
+        output_dir: parse_output_dir(output_dir),
+        create_subfolder,
+        start_paused: start_paused.unwrap_or(false),
+    };
 
+    let monitor = Arc::clone(&state.power);
     run_blocking(move || {
         let path = match name {
             Some(path) => PathBuf::from(path),
-            None => pick_torrent_file(&app)?,
+            None => ask_torrent_file(&app)?,
         };
-        let id = engine.add(Source::TorrentFile(path))?;
+        if let Some(dir) = request.output_dir.as_deref() {
+            // Validate before the metadata fetch: a wrong folder must be
+            // reported as a folder problem, not as a failed download.
+            brickman_core::validate_output_dir(dir).map_err(user_message)?;
+        }
+        let id = engine.add(Source::TorrentFile(path), request)?;
+        // A new download is a reason to stop a running "power off" countdown.
+        monitor.cancel_countdown();
         engine.snapshot(id)
     })
     .await
 }
 
 /// Native file picker; must run on a blocking thread, not on the UI thread.
-fn pick_torrent_file(app: &AppHandle) -> Result<PathBuf, String> {
+fn ask_torrent_file(app: &AppHandle) -> Result<PathBuf, String> {
     let picked = app
         .dialog()
         .file()
@@ -441,8 +653,58 @@ fn pick_torrent_file(app: &AppHandle) -> Result<PathBuf, String> {
     }
 }
 
+/// Same picker for the UI, where a cancelled dialog is not an error.
 #[tauri::command]
-async fn add_magnet(uri: Option<String>, state: State<'_, AppState>) -> Result<TorrentDto, String> {
+async fn pick_torrent_file(app: AppHandle) -> Result<Option<String>, String> {
+    run_blocking(move || {
+        let picked = app
+            .dialog()
+            .file()
+            .add_filter("Torrent files", &["torrent"])
+            .blocking_pick_file();
+        Ok(picked
+            .and_then(|file| file.into_path().ok())
+            .map(|file| file.to_string_lossy().into_owned()))
+    })
+    .await
+}
+
+/// Name and file count of a `.torrent` file, without adding it. The add dialog
+/// needs the count to decide about the per-torrent sub folder.
+#[tauri::command]
+async fn preview_torrent_file(
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<TorrentPreviewDto, String> {
+    let engine = engine(&state).await?;
+    let path = PathBuf::from(name.trim());
+    run_blocking(move || {
+        let preview = engine
+            .downloader
+            .inspect(&Source::TorrentFile(path), brickman_core::DEFAULT_METADATA_TIMEOUT)
+            .map_err(user_message)?;
+        Ok(TorrentPreviewDto {
+            name: preview.name.unwrap_or_default(),
+            files: u32::try_from(preview.file_count).unwrap_or(u32::MAX),
+        })
+    })
+    .await
+}
+
+fn parse_output_dir(dir: Option<String>) -> Option<PathBuf> {
+    dir.map(|dir| dir.trim().to_string())
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+}
+
+#[tauri::command]
+async fn add_magnet(
+    uri: Option<String>,
+    output_dir: Option<String>,
+    create_subfolder: Option<bool>,
+    start_paused: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<TorrentDto, String> {
     let engine = engine(&state).await?;
     let uri = uri
         .map(|uri| uri.trim().to_string())
@@ -451,9 +713,20 @@ async fn add_magnet(uri: Option<String>, state: State<'_, AppState>) -> Result<T
     if !uri.starts_with("magnet:") {
         return Err("only magnet: links are accepted here".to_string());
     }
+    let request = AddRequest {
+        output_dir: parse_output_dir(output_dir),
+        create_subfolder,
+        start_paused: start_paused.unwrap_or(false),
+    };
 
+    let monitor = Arc::clone(&state.power);
     run_blocking(move || {
-        let id = engine.add(Source::Magnet(uri))?;
+        if let Some(dir) = request.output_dir.as_deref() {
+            brickman_core::validate_output_dir(dir).map_err(user_message)?;
+        }
+        let id = engine.add(Source::Magnet(uri), request)?;
+        // A new download is a reason to stop a running "power off" countdown.
+        monitor.cancel_countdown();
         engine.snapshot(id)
     })
     .await
@@ -463,6 +736,7 @@ async fn add_magnet(uri: Option<String>, state: State<'_, AppState>) -> Result<T
 async fn resume_torrents(ids: Vec<String>, state: State<'_, AppState>) -> Result<(), String> {
     let engine = engine(&state).await?;
     let ids = parse_ids(&ids)?;
+    let monitor = Arc::clone(&state.power);
     run_blocking(move || {
         for id in ids {
             engine
@@ -470,6 +744,8 @@ async fn resume_torrents(ids: Vec<String>, state: State<'_, AppState>) -> Result
                 .resume(id)
                 .map_err(|error| error.to_string())?;
         }
+        // A lifted pause means downloads are running again: no countdown.
+        monitor.cancel_countdown();
         Ok(())
     })
     .await
@@ -841,6 +1117,36 @@ async fn open_external(url: String, app: AppHandle) -> Result<(), String> {
         .map_err(|error| format!("cannot open {url}: {error}"))
 }
 
+// ------------------------------------------------------- power after download
+
+/// State of the "power off when downloads finish" monitor, polled once a second
+/// together with the torrent list.
+#[tauri::command]
+fn get_power_status(state: State<'_, AppState>) -> power::PowerStatusDto {
+    state.power.status()
+}
+
+/// Stores the action and the delay; a running countdown is dropped.
+#[tauri::command]
+fn set_power_settings(
+    action: String,
+    delay_secs: u64,
+    state: State<'_, AppState>,
+) -> Result<power::PowerStatusDto, String> {
+    let action = power::PowerAction::parse(&action)?;
+    state
+        .power
+        .set_settings(power::PowerSettings::with(action, delay_secs));
+    Ok(state.power.status())
+}
+
+/// The "Cancel" button of the countdown banner.
+#[tauri::command]
+fn cancel_power_off(state: State<'_, AppState>) -> Result<power::PowerStatusDto, String> {
+    state.power.cancel();
+    Ok(state.power.status())
+}
+
 // -------------------------------------------------------------------- entry
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -865,10 +1171,19 @@ pub fn run() {
         .manage(AppState {
             engine: tokio::sync::Mutex::new(None),
             pending: Mutex::new(pending),
+            power: Arc::new(power::PowerState::new(&default_data_dir())),
         })
         .invoke_handler(tauri::generate_handler![
             engine_init,
             set_download_dir,
+            default_download_folder,
+            validate_download_dir,
+            pick_directory,
+            first_directory,
+            pick_torrent_file,
+            preview_torrent_file,
+            open_folder,
+            set_torrent_output_dir,
             list_torrents,
             get_session_stats,
             add_torrent_file,
@@ -887,6 +1202,9 @@ pub fn run() {
             list_peers,
             check_for_updates,
             open_external,
+            get_power_status,
+            set_power_settings,
+            cancel_power_off,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the tauri application");

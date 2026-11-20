@@ -62,6 +62,13 @@ pub struct AddOptions {
     pub output_dir: Option<PathBuf>,
     /// How long to wait for metadata of a magnet link.
     pub metadata_timeout: Duration,
+    /// Write the files into a sub folder named after the torrent.
+    ///
+    /// `None` keeps the engine's convention: multi-file torrents get their own
+    /// folder, a single-file torrent is written straight into the output folder.
+    pub create_subfolder: Option<bool>,
+    /// Add the torrent paused instead of handing it to the queue.
+    pub start_paused: bool,
 }
 
 impl Default for AddOptions {
@@ -69,6 +76,8 @@ impl Default for AddOptions {
         Self {
             output_dir: None,
             metadata_timeout: DEFAULT_METADATA_TIMEOUT,
+            create_subfolder: None,
+            start_paused: false,
         }
     }
 }
@@ -154,6 +163,20 @@ impl Downloader {
         self.add(source, AddOptions::default())
     }
 
+    /// Reads a source without adding it: the name and the number of files.
+    ///
+    /// Used by the add dialog to decide about the per-torrent sub folder before
+    /// anything is written. Paths are validated here as well, so an unsafe
+    /// torrent is refused while the user is still looking at the dialog.
+    pub fn inspect(&self, source: &Source, metadata_timeout: Duration) -> Result<TorrentPreview, Error> {
+        let metadata = self.fetch_metadata(source, metadata_timeout)?;
+        paths::validate_torrent_files(metadata.name.as_deref(), &metadata.files)?;
+        Ok(TorrentPreview {
+            name: metadata.name,
+            file_count: metadata.files.len(),
+        })
+    }
+
     /// Adds a torrent with explicit options.
     ///
     /// Metadata is fetched and validated *before* the torrent is started, so a
@@ -163,14 +186,17 @@ impl Downloader {
             .output_dir
             .clone()
             .unwrap_or_else(|| self.download_dir.clone());
-        std::fs::create_dir_all(&output_root)?;
+        // Fail here, with a message about the folder itself, instead of letting
+        // the engine fail with something the user cannot act on.
+        paths::validate_output_dir(&output_root)?;
 
         let metadata = self.fetch_metadata(&source, options.metadata_timeout)?;
         paths::validate_torrent_files(metadata.name.as_deref(), &metadata.files)?;
 
         let is_multi_file = metadata.files.len() > 1;
+        let create_subfolder = options.create_subfolder.unwrap_or(is_multi_file);
         let output_folder = match &metadata.name {
-            Some(name) if is_multi_file => output_root.join(name),
+            Some(name) if create_subfolder => output_root.join(name),
             _ => output_root,
         };
 
@@ -195,8 +221,12 @@ impl Downloader {
 
         let id = TorrentId(u32::try_from(raw_id).map_err(|_| Error::engine("torrent id overflow"))?);
         let described = source.describe();
+        let start_paused = options.start_paused;
         self.with_state(|s| {
-            s.entry_or_insert(id.0, described);
+            let entry = s.entry_or_insert(id.0, described);
+            if start_paused {
+                entry.user_paused = true;
+            }
         });
         self.save_state()?;
         self.sync_queue()?;
@@ -423,6 +453,138 @@ impl Downloader {
         });
         self.save_state()?;
         Ok(())
+    }
+
+    /// Moves a torrent to another download folder.
+    ///
+    /// librqbit 9.1.0 has no API for this: `ManagedTorrentShared::options` is
+    /// private and immutable, and the session only exposes `update_only_files`
+    /// and `update_trackers`. The folder is therefore changed by removing the
+    /// torrent from the engine *without* deleting its data, moving the files
+    /// that are already on disk and adding the same torrent bytes back with the
+    /// new output folder, asking the engine to reuse the old id. The initial
+    /// check after the re-add verifies the moved files, so the downloaded
+    /// pieces are kept instead of starting from zero.
+    ///
+    /// The torrent has to be stopped: renaming files of a running torrent is not
+    /// possible on Windows (the engine holds them open).
+    pub fn set_output_dir(
+        &self,
+        id: TorrentId,
+        new_dir: &Path,
+    ) -> Result<OutputDirChange, Error> {
+        let handle = self.handle(id)?;
+        if !matches!(handle.stats().state, TorrentStatsState::Paused) {
+            return Err(Error::InvalidArgument(
+                "stop the torrent before changing its download folder".to_string(),
+            ));
+        }
+        // `Session::delete` reads the metadata unconditionally; a torrent whose
+        // magnet is still resolving must not be removed here.
+        let Some(metadata) = handle.metadata.load_full() else {
+            return Err(Error::InvalidArgument(
+                "torrent metadata is not available yet".to_string(),
+            ));
+        };
+
+        paths::validate_output_dir(new_dir)?;
+        let old_dir = handle.output_folder().to_path_buf();
+        if same_folder(&old_dir, new_dir) {
+            return Ok(OutputDirChange {
+                id,
+                moved_files: 0,
+                failed_moves: Vec::new(),
+            });
+        }
+
+        let torrent_bytes = metadata.torrent_bytes.clone();
+        let relative: Vec<PathBuf> = metadata
+            .file_infos
+            .iter()
+            .map(|info| info.relative_filename.clone())
+            .collect();
+        let only_files = handle.only_files();
+        let (user_paused, added_at_ms, position, source) = self.with_state(|s| {
+            let entry = s.entry(id.0);
+            (
+                entry.is_some_and(|e| e.user_paused),
+                entry.map(|e| e.added_at_ms).unwrap_or(0),
+                s.position(id.0),
+                entry.map(|e| e.source.clone()).unwrap_or_default(),
+            )
+        });
+        // A name is needed for the new entry; keep whatever the state had.
+        let source = if source.is_empty() {
+            format!("moved to {}", new_dir.display())
+        } else {
+            source
+        };
+
+        // 1. Leave the engine, keep the files.
+        self.rt.block_on(
+            self.session
+                .delete(TorrentIdOrHash::Id(id.as_usize()), false),
+        )?;
+
+        // 2. Take the already downloaded files with us.
+        let (moved_files, failed_moves) = relocate_files(&old_dir, new_dir, &relative);
+
+        // 3. Add the same torrent back at the new place, reusing the id.
+        let add_options = AddTorrentOptions {
+            paused: true,
+            overwrite: true,
+            output_folder: Some(new_dir.to_string_lossy().into_owned()),
+            only_files: only_files.clone(),
+            preferred_id: Some(id.as_usize()),
+            ..Default::default()
+        };
+        let response = self.rt.block_on(
+            self.session
+                .add_torrent(AddTorrent::TorrentFileBytes(torrent_bytes), Some(add_options)),
+        );
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                // The torrent is gone from the engine and its state entry would
+                // be a ghost; report the whole picture instead of only the add.
+                self.with_state(|s| s.remove_torrent(id.0));
+                let _ = self.save_state();
+                return Err(Error::engine(format!(
+                    "torrent was removed and {moved_files} file(s) were moved to {}, \
+                     but adding it there failed: {error:#}",
+                    new_dir.display()
+                )));
+            }
+        };
+        let (raw_id, _handle) = match response {
+            AddTorrentResponse::Added(id, handle) => (id, handle),
+            AddTorrentResponse::AlreadyManaged(id, handle) => (id, handle),
+            AddTorrentResponse::ListOnly(_) => {
+                return Err(Error::engine("engine returned metadata only for a real add"));
+            }
+        };
+        let new_id = TorrentId(u32::try_from(raw_id).map_err(|_| Error::engine("torrent id overflow"))?);
+
+        // 4. Keep the queue position, the pause flag and the add time.
+        self.with_state(|s| {
+            if new_id != id {
+                s.remove_torrent(id.0);
+            }
+            let entry = s.entry_or_insert(new_id.0, source);
+            entry.user_paused = user_paused;
+            entry.added_at_ms = added_at_ms;
+            if let Some(index) = position {
+                s.move_to(new_id.0, index);
+            }
+        });
+        self.save_state()?;
+        self.sync_queue()?;
+
+        Ok(OutputDirChange {
+            id: new_id,
+            moved_files,
+            failed_moves,
+        })
     }
 
     /// Moves a torrent to the zero-based `index` of the queue and applies the
@@ -871,6 +1033,84 @@ struct Metadata {
     bytes: Bytes,
     name: Option<String>,
     files: Vec<Vec<String>>,
+}
+
+/// Result of [`Downloader::set_output_dir`].
+#[derive(Debug, Clone)]
+pub struct OutputDirChange {
+    /// Engine id after the move (the old one unless the engine assigned a new one).
+    pub id: TorrentId,
+    /// Files that were carried over to the new folder.
+    pub moved_files: usize,
+    /// Relative paths that could not be moved; those files are downloaded again.
+    pub failed_moves: Vec<String>,
+}
+
+/// What a source contains, as returned by [`Downloader::inspect`].
+#[derive(Debug, Clone)]
+pub struct TorrentPreview {
+    /// Torrent name (`info.name`), when the metadata has one.
+    pub name: Option<String>,
+    /// Number of files; more than one means the torrent needs its own folder.
+    pub file_count: usize,
+}
+
+/// Whether two paths point at the same folder (case-insensitive on Windows).
+fn same_folder(left: &Path, right: &Path) -> bool {
+    let resolve = |path: &Path| {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    };
+    let left = resolve(left);
+    let right = resolve(right);
+    if cfg!(windows) {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    } else {
+        left == right
+    }
+}
+
+/// Moves the files of a torrent from `old_root` to `new_root`.
+///
+/// Returns the number of moved files and the relative paths that failed. A file
+/// that already exists at the destination is left alone: the initial check after
+/// the re-add reports it as downloaded, and overwriting user data is worse.
+fn relocate_files(
+    old_root: &Path,
+    new_root: &Path,
+    relative: &[PathBuf],
+) -> (usize, Vec<String>) {
+    let mut moved = 0;
+    let mut failed = Vec::new();
+    for path in relative {
+        let from = old_root.join(path);
+        let to = new_root.join(path);
+        if !from.is_file() || to.exists() {
+            continue;
+        }
+        match move_file(&from, &to) {
+            Ok(()) => moved += 1,
+            Err(error) => failed.push(format!("{}: {error}", path.display())),
+        }
+    }
+    (moved, failed)
+}
+
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        // A rename across volumes fails on Windows; copy and remove instead.
+        Err(rename_error) => match std::fs::copy(from, to) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(from);
+                Ok(())
+            }
+            Err(_) => Err(rename_error),
+        },
+    }
 }
 
 /// Whether the engine currently runs this torrent, or `None` if it cannot be

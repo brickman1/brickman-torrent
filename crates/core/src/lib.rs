@@ -24,13 +24,16 @@ mod scheduler;
 mod state;
 
 pub use downloader::{
-    AddOptions, DEFAULT_METADATA_TIMEOUT, Downloader, DownloaderOptions,
+    AddOptions, DEFAULT_METADATA_TIMEOUT, Downloader, DownloaderOptions, OutputDirChange,
+    TorrentPreview,
 };
 pub use error::Error;
 pub use model::{
     FileView, PeerView, SessionView, Source, TorrentId, TorrentState, TorrentView, TrackerView,
 };
-pub use paths::{validate_component, validate_relative_path, validate_torrent_files};
+pub use paths::{
+    validate_component, validate_output_dir, validate_relative_path, validate_torrent_files,
+};
 pub use scheduler::{QueueItem, QueuePlan, plan, sort_for_queue};
 pub use state::{
     DEFAULT_MAX_ACTIVE, Limits, STATE_VERSION, State, TorrentEntry, default_data_dir,

@@ -1,10 +1,13 @@
 import { isLocale } from '../i18n';
+import { normalizeTrackers } from './trackers';
 import {
   DEFAULT_SETTINGS,
   RECENT_FOLDERS_LIMIT,
+  normalizePeerLimit,
   normalizePowerAction,
   normalizePowerDelay,
   type AppSettings,
+  type ColumnWidths,
 } from './types';
 
 const STORAGE_KEY = 'brickman-torrent.settings.v1';
@@ -27,6 +30,19 @@ function readRecentFolders(value: unknown): string[] {
   return result;
 }
 
+/** Reads stored column widths, dropping anything that is not a usable width. */
+function readColumnWidths(value: unknown): ColumnWidths {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const result: ColumnWidths = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const px = Math.round(Number(raw));
+    if (!Number.isFinite(px) || px <= 0) continue;
+    // The per-column minimum is applied by the table, which owns the columns.
+    result[key] = Math.min(6000, px);
+  }
+  return result;
+}
+
 export function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -43,6 +59,11 @@ export function loadSettings(): AppSettings {
       onDownloadsComplete: normalizePowerAction(parsed.onDownloadsComplete),
       powerDelaySecs: normalizePowerDelay(parsed.powerDelaySecs),
       recentFolders: readRecentFolders(parsed.recentFolders),
+      columnWidths: readColumnWidths(parsed.columnWidths),
+      upnpEnabled: parsed.upnpEnabled !== false,
+      utpEnabled: parsed.utpEnabled !== false,
+      peerLimit: normalizePeerLimit(parsed.peerLimit),
+      extraTrackers: normalizeTrackers(parsed.extraTrackers),
     };
   } catch (err) {
     console.warn('[brickman-torrent] failed to read settings', err);

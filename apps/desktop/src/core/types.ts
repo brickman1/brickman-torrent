@@ -87,6 +87,14 @@ export interface SessionStats {
   active: number;
   portOpen: boolean;
   port: number;
+  /** UPnP forwarding was requested at startup (the engine reports no result). */
+  upnpRequested: boolean;
+  /** The uTP (UDP) listener was requested at startup. */
+  utpEnabled: boolean;
+  /** Concurrent peers per torrent, `0` = no limit. */
+  peerLimit: number;
+  peersTcp: number;
+  peersUtp: number;
   dhtNodes: number;
   maxActive: number;
   downLimit: number;
@@ -149,6 +157,48 @@ export function normalizePowerDelay(value: unknown): number {
   return Math.min(POWER_DELAY_MAX, Math.max(POWER_DELAY_MIN, secs));
 }
 
+/** Column widths in px, keyed by column key (see `ui/table.ts` COLUMNS). */
+export type ColumnWidths = Record<string, number>;
+
+// --------------------------------------------------------------- connections
+
+/** Concurrent peers per torrent: the engine's default and the dialog bounds. */
+export const PEER_LIMIT_DEFAULT = 200;
+export const PEER_LIMIT_MIN = 10;
+export const PEER_LIMIT_MAX = 1000;
+
+/** Extra trackers kept; the engine drops the rest of the list. */
+export const EXTRA_TRACKERS_LIMIT = 50;
+
+/** Network settings from the "Connections" section (see `core/trackers.ts`). */
+export interface ConnectionSettings {
+  /** Ask the router to open the listening port over UPnP. */
+  upnpEnabled: boolean;
+  /** Listen for incoming uTP connections next to TCP. */
+  utpEnabled: boolean;
+  /** Concurrent peers per torrent, {@link PEER_LIMIT_MIN}–{@link PEER_LIMIT_MAX}. */
+  peerLimit: number;
+  /** Tracker URLs added to new downloads, one per entry. */
+  extraTrackers: string[];
+}
+
+/** What the engine could apply at once and what waits for a restart. */
+export interface ConnectionChange {
+  /** UPnP or uTP changed: the listener is built once, so a restart is needed. */
+  restartRequired: boolean;
+  /** Peer limit now in effect for new torrents, `0` = no limit. */
+  peerLimit: number;
+  /** Valid extra trackers in effect. */
+  trackers: number;
+}
+
+/** Absent or unusable values fall back to the default peer limit. */
+export function normalizePeerLimit(value: unknown): number {
+  const limit = Math.round(Number(value));
+  if (!Number.isFinite(limit)) return PEER_LIMIT_DEFAULT;
+  return Math.min(PEER_LIMIT_MAX, Math.max(PEER_LIMIT_MIN, limit));
+}
+
 export interface AppSettings {
   theme: 'light' | 'dark';
   /** UI language; `en` is the source language. */
@@ -171,6 +221,19 @@ export interface AppSettings {
    * used", so it survives a restart with the rest of the settings.
    */
   recentFolders: string[];
+  /**
+   * Column widths the user dragged, in px. Only the touched columns are
+   * present; the rest keep the default share of the table width.
+   */
+  columnWidths: ColumnWidths;
+  /** "Connections": ask the router to forward the port over UPnP (default on). */
+  upnpEnabled: boolean;
+  /** Listen for incoming uTP connections next to TCP (default on). */
+  utpEnabled: boolean;
+  /** Concurrent peers per torrent (10–1000, default 200). */
+  peerLimit: number;
+  /** Extra tracker URLs for new downloads, one per line. */
+  extraTrackers: string[];
 }
 
 /** Per-add choices from the add dialog. */
@@ -234,6 +297,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   onDownloadsComplete: 'nothing',
   powerDelaySecs: POWER_DELAY_DEFAULT,
   recentFolders: [],
+  columnWidths: {},
+  upnpEnabled: true,
+  utpEnabled: true,
+  peerLimit: PEER_LIMIT_DEFAULT,
+  extraTrackers: [],
 };
 
 /** How many folders the "recent folders" list keeps. */

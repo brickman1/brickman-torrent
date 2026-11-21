@@ -66,6 +66,15 @@ and `run [--seconds N]`. `list` shows the queue in order; `#` is the engine id a
   a temporary view: drag and drop is then refused with "Sort by # to change the
   queue". The row context menu has "Move to top", "Move up", "Move down" and
   "Move to position…" (a number, for those who prefer it).
+- **Resizable columns**: drag the divider at the right edge of a header cell
+  (6 px grab zone, `col-resize` cursor) to set a pixel width; double-click it to
+  fit the column to its widest cell. Each column has a minimum (name 120 px,
+  "#" and the numeric columns 44 px, status and progress 70 px). The widths are
+  stored in `brickman-torrent.settings.v1` under `columnWidths` (px per column
+  key, only the columns the user touched) and applied on the next start;
+  "Reset column widths" in the header context menu goes back to the defaults.
+  The table grows and scrolls horizontally when the sum exceeds the window, and
+  the last column absorbs the free space otherwise.
 - The UI runs in a plain browser on a mock provider (`npm run dev`) and in the
   webview on the real engine; if the engine cannot start, the UI falls back to
   the mock so the window is never empty.

@@ -24,8 +24,9 @@ mod scheduler;
 mod state;
 
 pub use downloader::{
-    AddOptions, DEFAULT_METADATA_TIMEOUT, Downloader, DownloaderOptions, OutputDirChange,
-    TorrentPreview,
+    AddOptions, ConnectionChange, ConnectionOptions, DEFAULT_METADATA_TIMEOUT, DEFAULT_PEER_LIMIT,
+    Downloader, DownloaderOptions, MAX_EXTRA_TRACKERS, MAX_PEER_LIMIT, MIN_PEER_LIMIT,
+    OutputDirChange, TorrentPreview, normalize_peer_limit, parse_trackers,
 };
 pub use error::Error;
 pub use model::{

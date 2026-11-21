@@ -13,10 +13,15 @@ import {
   type MockTorrent,
 } from './mock-data';
 import type { TorrentProvider } from './provider';
+import { normalizeTrackers } from './trackers';
 import {
+  PEER_LIMIT_DEFAULT,
   POWER_DELAY_DEFAULT,
+  normalizePeerLimit,
   normalizePowerDelay,
   type AddTorrentOptions,
+  type ConnectionChange,
+  type ConnectionSettings,
   type FilePriority,
   type HandlerStatus,
   type LinkPayload,
@@ -121,6 +126,18 @@ export class MockProvider implements TorrentProvider {
   private maxActive = 1;
   private downLimit = 0;
   private upLimit = 0;
+  // "Connections": the peer limit and the trackers are live, UPnP and uTP are
+  // listener options (the mock keeps what it "started" with).
+  private connections: ConnectionSettings = {
+    upnpEnabled: true,
+    utpEnabled: true,
+    peerLimit: PEER_LIMIT_DEFAULT,
+    extraTrackers: [],
+  };
+  /** `false` until the first settings push: that one is the startup config. */
+  private listenerConfigured = false;
+  private appliedUpnp = true;
+  private appliedUtp = true;
   private updateAvailable = true;
   private tickHandle: number | null = null;
   private addCounter = 0;
@@ -163,12 +180,19 @@ export class MockProvider implements TorrentProvider {
     const active = this.torrents.filter(
       (t) => (t.status === 'downloading' && !t.queued) || t.status === 'seeding',
     ).length;
+    const peers = this.torrents.reduce((sum, t) => sum + t.peers, 0);
+    const peersUtp = Math.floor(peers / 4);
     return {
       downSpeed: this.torrents.reduce((sum, t) => sum + t.downSpeed, 0),
       upSpeed: this.torrents.reduce((sum, t) => sum + t.upSpeed, 0),
       active,
       portOpen: true,
       port: 51413,
+      upnpRequested: this.appliedUpnp,
+      utpEnabled: this.appliedUtp,
+      peerLimit: this.connections.peerLimit,
+      peersTcp: peers - peersUtp,
+      peersUtp,
       dhtNodes: 342,
       maxActive: this.maxActive,
       downLimit: this.downLimit,
@@ -315,6 +339,30 @@ export class MockProvider implements TorrentProvider {
     this.downLimit = Math.max(0, Math.round(limits.downLimit));
     this.upLimit = Math.max(0, Math.round(limits.upLimit));
     this.afterMutation();
+  }
+
+  /**
+   * Same rule as the core: the peer limit and the trackers are used by the next
+   * torrent, UPnP and uTP belong to the listener and are only reported as a
+   * restart. The very first call is the startup config (`engine_init`).
+   */
+  async setConnectionSettings(settings: ConnectionSettings): Promise<ConnectionChange> {
+    const peerLimit = normalizePeerLimit(settings.peerLimit);
+    const extraTrackers = normalizeTrackers(settings.extraTrackers);
+    const restartRequired =
+      this.listenerConfigured &&
+      (settings.upnpEnabled !== this.appliedUpnp || settings.utpEnabled !== this.appliedUtp);
+    this.appliedUpnp = settings.upnpEnabled;
+    this.appliedUtp = settings.utpEnabled;
+    this.listenerConfigured = true;
+    this.connections = {
+      upnpEnabled: settings.upnpEnabled,
+      utpEnabled: settings.utpEnabled,
+      peerLimit,
+      extraTrackers,
+    };
+    this.afterMutation();
+    return { restartRequired, peerLimit, trackers: extraTrackers.length };
   }
 
   async files(id: string): Promise<TorrentFile[]> {

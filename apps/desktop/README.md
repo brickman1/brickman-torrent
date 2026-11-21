@@ -16,6 +16,9 @@ All sample torrents are legal/public content (see "Sample content" below).
 - Vite 8 + TypeScript (strict), one CSS file with theme variables
 - No React/Svelte, no icon fonts, no CDN, no network calls, no telemetry
 - Dense 24 px rows, classic light theme by default, dark theme toggle
+- Resizable table columns: drag a header divider (6 px grab zone), double-click
+  it to fit the column to its content, "Reset column widths" in the header
+  context menu. The pixel widths are stored with the settings (`columnWidths`).
 - UI strings live in `src/locales/*.json` with the micro-resolver `src/i18n.ts`
   (10 languages, switcher in the toolbar and in Settings → Appearance)
 
@@ -39,7 +42,7 @@ src/
                             fr.json, it.json, tr.json, pl.json, zh-CN.json
 src-tauri/                Cargo.toml, tauri.conf.json, capabilities, icons
 scripts/screenshot.mjs    docs/mockup*.png via local Edge/Chrome (playwright-core)
-scripts/smoke.mjs         73 interaction checks in headless Edge
+scripts/smoke.mjs         90 interaction checks in headless Edge
 scripts/check-locales.mjs every dictionary against en.json (keys + placeholders)
 ```
 
@@ -106,8 +109,8 @@ choice is saved with the other settings and applies at once.
 | Status bar | sums, port open, version, mock badge | `get_session_stats` |
 | Update check | 800 ms delay; answer toggled in Settings ("Simulate an available update") | `check_for_updates` |
 
-Settings (theme, language, max active, limits, check-on-startup) persist in
-`localStorage` under `brickman-torrent.settings.v1`.
+Settings (theme, language, max active, limits, check-on-startup) and the column
+widths persist in `localStorage` under `brickman-torrent.settings.v1`.
 
 ## Sample content
 

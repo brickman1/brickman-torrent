@@ -477,6 +477,43 @@ button {
   vertical-align: 1px;
 }
 
+/* Column dividers: the hairline sits in a 6 px grab zone at the right edge of
+   every header cell. Dragging it rewrites the <col> width, double-clicking
+   fits the column to its content. */
+.col-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 3;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.col-resizer::after {
+  content: '';
+  position: absolute;
+  top: 20%;
+  right: 0;
+  width: 1px;
+  height: 60%;
+  background: var(--border);
+}
+
+.col-resizer:hover::after,
+body.col-resizing .col-resizer::after {
+  background: var(--accent);
+}
+
+/* While a divider is dragged the cursor must not flicker over other cells. */
+body.col-resizing,
+body.col-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
 .torrent-table tbody td {
   height: 30px;
   padding: 0 8px;
@@ -1602,3 +1639,33 @@ button {
   margin-left: 4px;
 }
 
+
+/* --------------------------------------------------------------- connections */
+
+/* The tracker field is one URL per line: a monospace box reads better than a
+   20-character single line input, and it can be made taller by the user. */
+.trackers-input {
+  min-height: 108px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.trackers-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Inline range/validation note: the dialog stays open, so it must not shout. */
+.field-warning {
+  color: var(--err);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.field-warning[hidden] {
+  display: none;
+}

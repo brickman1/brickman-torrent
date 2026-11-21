@@ -12,8 +12,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use brickman_core::{
-    AddOptions, Downloader, DownloaderOptions, OutputDirChange, SessionView, Source, TorrentId,
-    TorrentState, TorrentView, default_data_dir, default_download_dir, now_ms,
+    AddOptions, ConnectionOptions, DEFAULT_PEER_LIMIT, Downloader, DownloaderOptions,
+    OutputDirChange, SessionView, Source, TorrentId, TorrentState, TorrentView, default_data_dir,
+    default_download_dir, normalize_peer_limit, now_ms,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -86,10 +87,42 @@ struct SessionStatsDto {
     active: u32,
     port_open: bool,
     port: u16,
+    /// UPnP forwarding was requested at startup (librqbit reports no result).
+    upnp_requested: bool,
+    /// The uTP listener was requested at startup.
+    utp_enabled: bool,
+    /// Concurrent peers per torrent, `0` = no limit.
+    peer_limit: u32,
+    peers_tcp: u32,
+    peers_utp: u32,
     dht_nodes: u32,
     max_active: u32,
     down_limit: u64,
     up_limit: u64,
+}
+
+/// Per-add network options, as the settings dialog sends them.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionSettingsInput {
+    #[serde(default)]
+    upnp_enabled: Option<bool>,
+    #[serde(default)]
+    utp_enabled: Option<bool>,
+    #[serde(default)]
+    peer_limit: Option<u32>,
+    #[serde(default)]
+    extra_trackers: Vec<String>,
+}
+
+/// What `set_connection_settings` could apply and what needs a restart.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionChangeDto {
+    restart_required: bool,
+    /// Peer limit for the next torrents, `0` = no limit.
+    peer_limit: u32,
+    trackers: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -192,9 +225,14 @@ struct AddRequest {
 }
 
 impl Engine {
-    fn new(data_dir: PathBuf, download_dir: PathBuf) -> Result<Self, String> {
-        let downloader = Downloader::new(DownloaderOptions::new(data_dir, download_dir.clone()))
-            .map_err(|error| error.to_string())?;
+    fn new(
+        data_dir: PathBuf,
+        download_dir: PathBuf,
+        connections: ConnectionOptions,
+    ) -> Result<Self, String> {
+        let downloader =
+            Downloader::new(DownloaderOptions::new(data_dir, download_dir.clone()).with_connections(connections))
+                .map_err(|error| error.to_string())?;
         Ok(Self {
             downloader,
             add_dir: Mutex::new(download_dir),
@@ -374,11 +412,33 @@ fn session_stats_dto(view: &SessionView) -> SessionStatsDto {
         active: view.active,
         port_open: view.port_open,
         port: view.port,
+        upnp_requested: view.upnp_requested,
+        utp_enabled: view.utp_enabled,
+        peer_limit: view.peer_limit,
+        peers_tcp: view.peers_tcp,
+        peers_utp: view.peers_utp,
         dht_nodes: view.dht_nodes,
         max_active: view.max_active,
         // The settings dialog works in kB/s; the core stores bytes per second.
         down_limit: view.down_limit_bps / KB,
         up_limit: view.up_limit_bps / KB,
+    }
+}
+
+/// Settings dialog → core options. A missing switch keeps the recommended
+/// default (both transports on, 200 peers per torrent); a limit of `0` means
+/// "no limit", like everywhere else in the settings.
+fn connection_options(input: Option<ConnectionSettingsInput>) -> ConnectionOptions {
+    let Some(input) = input else {
+        return ConnectionOptions::default();
+    };
+    ConnectionOptions {
+        upnp_port_forwarding: input.upnp_enabled.unwrap_or(true),
+        utp_enabled: input.utp_enabled.unwrap_or(true),
+        peer_limit: normalize_peer_limit(
+            input.peer_limit.or(Some(DEFAULT_PEER_LIMIT)),
+        ),
+        extra_trackers: input.extra_trackers,
     }
 }
 
@@ -399,11 +459,13 @@ fn kb_to_bps(kilobytes: u64) -> Option<u64> {
 
 // --------------------------------------------------------------- commands
 
-/// Creates the engine once, using the download folder from the UI settings.
-/// A second call only updates the folder used for new torrents.
+/// Creates the engine once, using the download folder and the network options
+/// from the UI settings. A second call only updates the folder used for new
+/// torrents: the listener of a running engine cannot be rebuilt.
 #[tauri::command]
 async fn engine_init(
     download_dir: Option<String>,
+    connections: Option<ConnectionSettingsInput>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
@@ -424,8 +486,9 @@ async fn engine_init(
     let pending = std::mem::take(&mut *lock(&state.pending));
     let data_dir = default_data_dir();
     let download_dir = dir.clone();
+    let connections = connection_options(connections);
     let engine = run_blocking(move || {
-        let engine = Engine::new(data_dir, download_dir)?;
+        let engine = Engine::new(data_dir, download_dir, connections)?;
         for path in pending {
             match engine.add(Source::TorrentFile(path.clone()), AddRequest::default()) {
                 Ok(id) => eprintln!("[brickman-torrent] added {} as #{id}", path.display()),
@@ -898,6 +961,27 @@ async fn set_max_active(max_active: u32, state: State<'_, AppState>) -> Result<(
     .await
 }
 
+/// Connection settings from the dialog: the peer limit and the extra trackers
+/// are applied to the next torrents, a change of UPnP or uTP needs a restart
+/// (the listener is created once, inside the engine).
+#[tauri::command]
+async fn set_connection_settings(
+    connections: ConnectionSettingsInput,
+    state: State<'_, AppState>,
+) -> Result<ConnectionChangeDto, String> {
+    let engine = engine(&state).await?;
+    let options = connection_options(Some(connections));
+    run_blocking(move || {
+        let change = engine.downloader.set_connection_options(options);
+        Ok(ConnectionChangeDto {
+            restart_required: change.restart_required,
+            peer_limit: change.peer_limit.unwrap_or(0),
+            trackers: u32::try_from(change.trackers).unwrap_or(u32::MAX),
+        })
+    })
+    .await
+}
+
 /// Limits arrive in kB/s (the unit of the settings dialog), `0` = unlimited.
 #[tauri::command]
 async fn set_limits(
@@ -1356,6 +1440,7 @@ pub fn run() {
             move_torrent,
             move_torrent_by,
             set_max_active,
+            set_connection_settings,
             set_limits,
             list_files,
             set_file_priority,

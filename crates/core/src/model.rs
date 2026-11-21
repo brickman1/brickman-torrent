@@ -212,6 +212,20 @@ pub struct SessionView {
     pub port: u16,
     /// Whether the engine is accepting incoming connections.
     pub port_open: bool,
+    /// UPnP port forwarding was requested when the session started.
+    ///
+    /// librqbit 9.1.0 has no API that reports whether the router accepted the
+    /// mapping: a failure is only logged by the engine, so this says "requested",
+    /// not "forwarded".
+    pub upnp_requested: bool,
+    /// The uTP (UDP) listener was requested when the session started.
+    pub utp_enabled: bool,
+    /// Concurrent peers per torrent, `0` = engine default / no limit.
+    pub peer_limit: u32,
+    /// Live peer connections over TCP.
+    pub peers_tcp: u32,
+    /// Live peer connections over uTP.
+    pub peers_utp: u32,
     /// DHT routing table size.
     pub dht_nodes: u32,
     /// Active-download limit, `0` = unlimited.

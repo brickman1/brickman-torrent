@@ -4,6 +4,8 @@
 import type { TorrentProvider } from './provider';
 import type {
   AddTorrentOptions,
+  ConnectionChange,
+  ConnectionSettings,
   FilePriority,
   HandlerStatus,
   LinkPayload,
@@ -28,6 +30,8 @@ const LINK_EVENT = 'link-received';
 export interface TauriProviderOptions {
   /** Download folder from the UI settings; empty = system default. */
   downloadDir?: string;
+  /** "Connections" settings: they shape the engine's listener at startup. */
+  connections?: ConnectionSettings;
 }
 
 export function isTauri(): boolean {
@@ -53,8 +57,13 @@ export async function createTauriProvider(
     else buffered.push(payload);
   });
 
-  // The engine is created once, here, with the download folder from settings.
-  await call<void>('engine_init', { downloadDir: options.downloadDir ?? null });
+  // The engine is created once, here, with the download folder and the
+  // connection settings. UPnP and uTP are listener options: they are only read
+  // at this point, a later change needs a restart (the UI says so).
+  await call<void>('engine_init', {
+    downloadDir: options.downloadDir ?? null,
+    connections: connectionArgs(options.connections),
+  });
 
   const provider: TorrentProvider = {
     kind: 'tauri',
@@ -86,6 +95,10 @@ export async function createTauriProvider(
     moveBy: (id, delta) => call<void>('move_torrent_by', { id, delta }),
     setMaxActive: (maxActive) => call<void>('set_max_active', { maxActive }),
     setLimits: (limits) => call<void>('set_limits', { ...limits }),
+    setConnectionSettings: (settings) =>
+      call<ConnectionChange>('set_connection_settings', {
+        connections: connectionArgs(settings),
+      }),
     setDownloadDir: (dir) => call<void>('set_download_dir', { dir }),
 
     files: (id) => call<TorrentFile[]>('list_files', { id }),
@@ -143,5 +156,16 @@ function addArgs(options?: AddTorrentOptions): Record<string, unknown> {
     outputDir: options?.outputDir?.trim() || null,
     createSubfolder: options?.createSubfolder ?? null,
     startPaused: options?.startPaused ?? null,
+  };
+}
+
+/** "Connections" block as the Rust command expects it (camelCase fields). */
+function connectionArgs(settings?: ConnectionSettings): Record<string, unknown> | null {
+  if (!settings) return null;
+  return {
+    upnpEnabled: settings.upnpEnabled,
+    utpEnabled: settings.utpEnabled,
+    peerLimit: settings.peerLimit,
+    extraTrackers: settings.extraTrackers,
   };
 }

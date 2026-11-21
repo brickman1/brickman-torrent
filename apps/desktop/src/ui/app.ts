@@ -8,6 +8,7 @@ import {
   withRecentFolder,
   type AddTorrentOptions,
   type AppSettings,
+  type ColumnWidths,
   type FilePriority,
   type LinkPayload,
   type OutputDirChange,
@@ -32,7 +33,16 @@ import { icon, type IconName } from './icons';
 import { showContextMenu, type MenuItem } from './menu';
 import { openModal } from './modal';
 import { buildSettingsForm } from './settings-dialog';
-import { COLUMNS, createTable, renderHeader, renderRows, sortTorrents, type SortKey, type SortState } from './table';
+import {
+  COLUMNS,
+  createTable,
+  renderHeader,
+  renderRows,
+  sortTorrents,
+  type ColumnLayout,
+  type SortKey,
+  type SortState,
+} from './table';
 
 type FilterKind =
   | 'all'
@@ -91,6 +101,7 @@ interface DomRefs {
   sidebar: HTMLElement;
   thead: HTMLTableSectionElement;
   tbody: HTMLTableSectionElement;
+  layout: ColumnLayout;
   details: HTMLElement;
   statusbar: HTMLElement;
   buttons: Record<string, HTMLButtonElement>;
@@ -161,6 +172,7 @@ export class App {
       }),
       this.provider.setDownloadDir?.(this.settings.downloadDir),
       this.pushPowerSettings(this.settings),
+      this.pushConnectionSettings(this.settings),
     ]);
 
     this.buildShell();
@@ -189,6 +201,8 @@ export class App {
   // ------------------------------------------------------------------ shell
 
   private buildShell(): void {
+    // The old table's observer would keep watching a wrapper that is gone.
+    this.dom?.layout.disconnect();
     clear(this.root);
 
     const toolbar = el('header', { class: 'toolbar' });
@@ -257,7 +271,10 @@ export class App {
     toolbar.append(left, el('div', { class: 'tb-spacer' }), right);
 
     const sidebar = el('aside', { class: 'sidebar' });
-    const { table, thead, tbody } = createTable();
+    const { table, thead, tbody, layout } = createTable({
+      widths: this.settings.columnWidths,
+      onChange: (widths) => this.saveColumnWidths(widths),
+    });
     const tableWrap = el('div', { class: 'table-wrap' }, table);
     const main = el('div', { class: 'main' }, sidebar, tableWrap);
     const details = el('section', { class: 'details' });
@@ -266,8 +283,19 @@ export class App {
 
     this.root.appendChild(shell);
 
-    this.dom = { toolbar, sidebar, thead, tbody, details, statusbar, buttons };
+    this.dom = { toolbar, sidebar, thead, tbody, layout, details, statusbar, buttons };
     this.headerSig = '';
+    // Only now the table has a width to resolve the starting column shares.
+    layout.observe();
+
+    thead.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      showContextMenu(
+        [{ label: t('menu.resetColumnWidths'), action: () => this.resetColumnWidths() }],
+        event.clientX,
+        event.clientY,
+      );
+    });
 
     tbody.addEventListener('click', (event) => {
       const row = (event.target as HTMLElement).closest<HTMLElement>('tr[data-id]');
@@ -515,7 +543,7 @@ export class App {
   private renderTable(): void {
     const signature = `${this.state.sort.key}:${this.state.sort.dir}`;
     if (signature !== this.headerSig) {
-      renderHeader(this.dom.thead, this.state.sort, (key) => this.toggleSort(key));
+      renderHeader(this.dom.thead, this.state.sort, (key) => this.toggleSort(key), this.dom.layout);
       this.headerSig = signature;
     }
 
@@ -540,6 +568,19 @@ export class App {
       draggable: this.queueEditable(),
       activeTopId: activeTop ? activeTop.id : null,
     });
+  }
+
+  // ---------------------------------------------------------- column widths
+
+  /** The user dragged a divider: remember the widths with the rest of the settings. */
+  private saveColumnWidths(widths: ColumnWidths): void {
+    this.settings = { ...this.settings, columnWidths: widths };
+    saveSettings(this.settings);
+  }
+
+  /** "Reset column widths" in the header context menu. */
+  private resetColumnWidths(): void {
+    this.dom.layout.reset();
   }
 
   private renderDetails(force: boolean): void {
@@ -591,12 +632,26 @@ export class App {
     );
 
     const portOpen = stats?.portOpen ?? false;
+    const port = stats?.port ?? 0;
+    // Three states: no listener at all, listening, listening with UPnP asked
+    // for. librqbit reports no UPnP result, so the title says "requested" and
+    // never claims the router accepted the mapping.
+    const portTitle = !portOpen
+      ? t('statusbar.portClosedHint')
+      : stats?.upnpRequested
+        ? t('statusbar.portHintUpnp', { port })
+        : t('statusbar.portHint', { port });
+    const portText = !portOpen
+      ? port > 0
+        ? t('statusbar.portClosed', { port })
+        : t('statusbar.portOff')
+      : t('statusbar.portOpen', { port });
     left.appendChild(
       el(
         'span',
-        { class: 'sb-item', title: t('statusbar.portHint', { port: stats?.port ?? 0 }) },
+        { class: 'sb-item sb-port', title: portTitle },
         el('span', { class: `sb-dot ${portOpen ? 'ok' : 'err'}` }),
-        el('span', { text: t(portOpen ? 'statusbar.portOpen' : 'statusbar.portClosed') }),
+        el('span', { text: portText }),
       ),
     );
 
@@ -678,6 +733,31 @@ export class App {
     text.textContent = status.dryRun ? `${label} — ${t('power.dryRun')}` : label;
   }
 
+  /**
+   * Handing the "Connections" settings to the engine. The peer limit and the
+   * trackers are used by the next torrents; a changed listener (UPnP / uTP) is
+   * reported as `restartRequired`, and the user is told instead of being left
+   * with a switch that quietly does nothing.
+   */
+  private pushConnectionSettings(settings: AppSettings): Promise<unknown> {
+    const apply = this.provider.setConnectionSettings;
+    if (!apply) return Promise.resolve();
+    return apply
+      .call(this.provider, {
+        upnpEnabled: settings.upnpEnabled,
+        utpEnabled: settings.utpEnabled,
+        peerLimit: settings.peerLimit,
+        extraTrackers: settings.extraTrackers,
+      })
+      .then((change) => {
+        if (change?.restartRequired) this.toast(t('toast.restartRequired'));
+        return change;
+      })
+      .catch((err: unknown) => {
+        console.error('[brickman-torrent] cannot apply the connection settings', err);
+      });
+  }
+
   /** Handing the settings to the engine; the engine owns the countdown. */
   private pushPowerSettings(settings: AppSettings): Promise<unknown> {
     return Promise.resolve(
@@ -690,8 +770,7 @@ export class App {
     });
   }
 
-  private async cancelPowerOff(): Promise<void> {
-    try {
+  private async cancelPowerOff(): Promise<void> {    try {
       await this.provider.cancelPowerOff?.();
     } catch (err) {
       console.error('[brickman-torrent] cannot cancel the shutdown', err);
@@ -1266,6 +1345,7 @@ export class App {
       this.provider.setLimits({ downLimit: next.downLimit, upLimit: next.upLimit }),
       this.provider.setDownloadDir?.(next.downloadDir),
       this.pushPowerSettings(next),
+      this.pushConnectionSettings(next),
     ]);
 
     if (localeChanged) {

@@ -272,6 +272,128 @@ await page.waitForTimeout(250);
 const availableText = await statusText();
 check('status bar shows available update', availableText.includes('Update 0.2.0 available'), availableText);
 
+// --- settings: connections (UPnP, uTP, peer limit, extra trackers) -------
+const settingsSectionTitles = () =>
+  page.$$eval('.settings-form .settings-section', (nodes) =>
+    nodes.map((node) => node.textContent?.trim() ?? ''),
+  );
+/** The checkbox of the row whose label is `text` (the rows wrap their input). */
+const checkRow = (text) =>
+  page
+    .locator('.settings-form label.check-row')
+    .filter({ hasText: text })
+    .locator('input[type="checkbox"]');
+const peerLimitInput = () => page.locator('.settings-form input.peer-limit');
+const trackerArea = () => page.locator('.settings-form textarea.trackers-input');
+const storedSettingsNow = () =>
+  page.evaluate(() => {
+    const raw = localStorage.getItem('brickman-torrent.settings.v1');
+    return raw ? JSON.parse(raw) : null;
+  });
+
+await openSettings();
+const sections = await settingsSectionTitles();
+check(
+  'settings has a Connections section',
+  sections.some((title) => /connections/i.test(title)),
+  sections.join(' | '),
+);
+check(
+  'UPnP is on by default',
+  await checkRow('Open the port through UPnP').isChecked(),
+);
+check(
+  'uTP is on by default',
+  await checkRow('uTP (UDP) connections').isChecked(),
+);
+check(
+  'the peer limit defaults to 200',
+  (await peerLimitInput().inputValue()) === '200',
+  await peerLimitInput().inputValue(),
+);
+
+// Out of range values are flagged at once; the stored value is clamped below.
+await peerLimitInput().fill('5');
+await page.waitForTimeout(120);
+check('a peer limit below the range is flagged', await page.locator('.peer-limit-warning').isVisible());
+await peerLimitInput().fill('5000');
+await page.waitForTimeout(120);
+check('a peer limit above the range is flagged', await page.locator('.peer-limit-warning').isVisible());
+
+// UPnP and uTP live in the listening socket: the dialog says so instead of
+// pretending the switch took effect.
+check('the restart hint is hidden while the listener is untouched', !(await page.locator('.restart-hint').isVisible()));
+await checkRow('Open the port through UPnP').uncheck();
+await page.waitForTimeout(80);
+check('changing UPnP says a restart is needed', await page.locator('.restart-hint').isVisible());
+await checkRow('Open the port through UPnP').check();
+await page.waitForTimeout(80);
+check('the restart hint goes away when the switch is back', !(await page.locator('.restart-hint').isVisible()));
+
+// A line that is not an announce URL is reported and dropped, not saved.
+check('the tracker field starts empty', (await trackerArea().inputValue()) === '');
+await trackerArea().fill('not a tracker\nudp://tracker.example.org:1337/announce');
+await page.waitForTimeout(120);
+check('a junk tracker line is reported', await page.locator('.trackers-warning').isVisible());
+
+await page.locator('.settings-form .add-popular-trackers').click();
+await page.waitForTimeout(120);
+const filledTrackers = (await trackerArea().inputValue()).split(/\r?\n/).filter(Boolean);
+check(
+  'the popular trackers button fills the field with at least 10 lines',
+  filledTrackers.filter((line) => /^(udp|https?):\/\//.test(line)).length >= 10,
+  String(filledTrackers.length),
+);
+check(
+  'every line the button adds is an announce URL',
+  filledTrackers
+    .filter((line) => !/^not a tracker$/.test(line))
+    .every((line) => /^(udp|https?):\/\//.test(line)),
+  filledTrackers.slice(0, 2).join(' | '),
+);
+check('the built-in list is labelled as such', /built in/i.test(await page.locator('.settings-form').innerText()));
+
+// 5 → 10 on save (the field still holds the out of range value).
+await peerLimitInput().fill('5');
+await applySettings();
+const savedConnections = await storedSettingsNow();
+check('saving clamps the peer limit to 10', savedConnections?.peerLimit === 10, String(savedConnections?.peerLimit));
+check(
+  'the UPnP and uTP switches are stored',
+  savedConnections?.upnpEnabled === true && savedConnections?.utpEnabled === true,
+  JSON.stringify({ upnp: savedConnections?.upnpEnabled, utp: savedConnections?.utpEnabled }),
+);
+check(
+  'the extra trackers are stored',
+  Array.isArray(savedConnections?.extraTrackers) && savedConnections.extraTrackers.length >= 10,
+  String(savedConnections?.extraTrackers?.length),
+);
+check(
+  'the junk tracker line is not stored',
+  !(savedConnections?.extraTrackers ?? []).includes('not a tracker'),
+  JSON.stringify(savedConnections?.extraTrackers?.slice(0, 2)),
+);
+
+// 5000 → 1000, then back to the default so the rest of the run is unchanged.
+await openSettings();
+await peerLimitInput().fill('5000');
+await applySettings();
+check('saving clamps the peer limit to 1000', (await storedSettingsNow())?.peerLimit === 1000, String((await storedSettingsNow())?.peerLimit));
+await openSettings();
+await peerLimitInput().fill('200');
+await applySettings();
+check('the peer limit is back to 200', (await storedSettingsNow())?.peerLimit === 200, String((await storedSettingsNow())?.peerLimit));
+
+// --- status bar: port and its state ------------------------------------
+const portText = await statusText();
+check(
+  'the status bar shows the port and its state',
+  /Port \d+ · (open|closed)/.test(portText),
+  portText.replace(/\s+/g, ' '),
+);
+check('the status bar reports the mock listening port as open', portText.includes('Port 51413 · open'), portText);
+check('the port item is a single status bar entry', (await page.locator('.statusbar .sb-port').count()) === 1);
+
 // --- locale switch ------------------------------------------------------
 const NATIVE_NAMES = [
   'English',
@@ -594,6 +716,220 @@ check(
   await addSourceInput().inputValue(),
 );
 await page.getByRole('button', { name: 'Cancel' }).click();
+await page.waitForTimeout(200);
+
+// --- column widths: drag, persist, reset, fit ---------------------------
+const colWidths = () =>
+  page.$$eval('.torrent-table colgroup col', (cols) =>
+    cols.map((col) => Math.round(Number.parseFloat(col.style.width))),
+  );
+const sortState = () =>
+  page.$$eval('.torrent-table thead th', (heads) => heads.map((th) => th.getAttribute('aria-sort')));
+const storedColumnWidths = () =>
+  page.evaluate(() => {
+    const raw = localStorage.getItem('brickman-torrent.settings.v1');
+    return raw ? (JSON.parse(raw).columnWidths ?? null) : null;
+  });
+/** Simulates the pointer sequence of a divider drag inside the page. */
+const dragColumn = (key, dx) =>
+  page.evaluate(
+    ({ key, dx }) => {
+      const grip = document.querySelector(`th.col-${key} .col-resizer`);
+      if (!grip) return false;
+      const rect = grip.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      const base = {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        pointerType: 'mouse',
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+      };
+      grip.dispatchEvent(new PointerEvent('pointerdown', { ...base, button: 0, buttons: 1 }));
+      document.dispatchEvent(new PointerEvent('pointermove', { ...base, clientX: x + dx, buttons: 1 }));
+      document.dispatchEvent(
+        new PointerEvent('pointerup', { ...base, clientX: x + dx, button: 0, buttons: 0 }),
+      );
+      return true;
+    },
+    { key, dx },
+  );
+
+check(
+  'every header cell carries a resize handle',
+  (await page.locator('.torrent-table thead th .col-resizer').count()) === 11,
+  String(await page.locator('.torrent-table thead th .col-resizer').count()),
+);
+check(
+  'the divider shows the col-resize cursor',
+  (await page
+    .locator('th.col-name .col-resizer')
+    .evaluate((node) => getComputedStyle(node).cursor)) === 'col-resize',
+);
+
+const widthsBefore = await colWidths();
+const sortBefore = await sortState();
+check(
+  'the starting column widths are pixels, not percentages',
+  widthsBefore.length === 11 && widthsBefore.every((width) => Number.isFinite(width) && width > 0),
+  widthsBefore.join(','),
+);
+
+await dragColumn('name', 60);
+await page.waitForTimeout(120);
+const widthsAfterDrag = await colWidths();
+check(
+  'dragging a divider widens the column by the drag distance',
+  widthsAfterDrag[1] - widthsBefore[1] === 60,
+  `${widthsBefore[1]} -> ${widthsAfterDrag[1]}`,
+);
+const storedAfterDrag = await storedColumnWidths();
+check(
+  'the dragged width is stored in the settings',
+  storedAfterDrag?.name === widthsAfterDrag[1],
+  JSON.stringify(storedAfterDrag),
+);
+check(
+  'dragging a divider does not change the sort',
+  JSON.stringify(await sortState()) === JSON.stringify(sortBefore),
+  JSON.stringify(await sortState()),
+);
+
+const sortBeforeClick = await sortState();
+await page.locator('th.col-name .col-resizer').click();
+await page.waitForTimeout(120);
+check(
+  'a click on the divider does not sort either',
+  JSON.stringify(await sortState()) === JSON.stringify(sortBeforeClick),
+  JSON.stringify(await sortState()),
+);
+
+// The settings dialog must not drop the widths the user set.
+await openSettings();
+await applySettings();
+check(
+  'applying the settings keeps the column widths',
+  (await storedColumnWidths())?.name === widthsAfterDrag[1],
+  JSON.stringify(await storedColumnWidths()),
+);
+
+await page.reload({ waitUntil: 'load' });
+await page.waitForSelector('tr[data-id]');
+const widthsReloaded = await colWidths();
+check(
+  'the stored widths are applied after a reload',
+  widthsReloaded[1] === widthsAfterDrag[1],
+  `${widthsReloaded[1]} vs ${widthsAfterDrag[1]}`,
+);
+
+// A locale switch rebuilds the shell from the settings: widths must survive.
+await page.locator('.tb-select').selectOption('de');
+await page.waitForTimeout(350);
+const widthsDe = await colWidths();
+check(
+  'a locale switch keeps the column widths',
+  widthsDe[1] === widthsAfterDrag[1],
+  `${widthsDe[1]} vs ${widthsAfterDrag[1]}`,
+);
+await page.locator('.tb-select').selectOption('en');
+await page.waitForTimeout(350);
+
+await dragColumn('ordinal', -200);
+await page.waitForTimeout(120);
+const widthsMin = await colWidths();
+check('the "#" column stops at its 44 px minimum', widthsMin[0] === 44, String(widthsMin[0]));
+
+// Double-click fits the column to its content (all rows plus the header).
+await dragColumn('name', -100);
+const widthsShrunk = await colWidths();
+await page.evaluate(() => {
+  document
+    .querySelector('th.col-name .col-resizer')
+    ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+});
+await page.waitForTimeout(120);
+const widthsFitted = await colWidths();
+check(
+  'double-clicking the divider fits the column to its content',
+  widthsFitted[1] > widthsShrunk[1] && widthsFitted[1] >= 120,
+  `${widthsShrunk[1]} -> ${widthsFitted[1]}`,
+);
+
+await dragColumn('name', 700);
+await page.waitForTimeout(120);
+const widthsWide = await colWidths();
+const scrolls = await page.evaluate(() => {
+  const wrap = document.querySelector('.table-wrap');
+  return Boolean(wrap) && wrap.scrollWidth > wrap.clientWidth;
+});
+check('a table wider than the window scrolls horizontally', scrolls);
+
+await page.evaluate(() => {
+  const th = document.querySelector('th.col-name');
+  const rect = th?.getBoundingClientRect();
+  th?.dispatchEvent(
+    new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: rect ? rect.left + rect.width / 2 : 420,
+      clientY: rect ? rect.top + rect.height / 2 : 70,
+    }),
+  );
+});
+await page.waitForSelector('.ctx-menu');
+const headerMenu = await page.locator('.ctx-menu').innerText();
+check(
+  'right-clicking a header offers "Reset column widths"',
+  headerMenu.includes('Reset column widths'),
+  headerMenu.replace(/\s+/g, ' '),
+);
+await page.evaluate(() => {
+  [...document.querySelectorAll('.ctx-menu .menu-item')]
+    .find((item) => item.textContent?.includes('Reset column widths'))
+    ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+});
+await page.waitForTimeout(150);
+const widthsReset = await colWidths();
+check(
+  'reset puts the default widths back',
+  widthsReset[0] !== 44 && widthsReset[1] < widthsWide[1] && widthsReset[1] >= 120,
+  widthsReset.join(','),
+);
+check(
+  'reset clears the stored widths',
+  JSON.stringify(await storedColumnWidths()) === '{}',
+  JSON.stringify(await storedColumnWidths()),
+);
+
+// With the defaults back, a narrower window keeps the table at the container
+// width: the last column absorbs the difference instead of scrolling.
+await page.setViewportSize({ width: 1000, height: 700 });
+await page.waitForTimeout(300);
+const reflow = await page.evaluate(() => {
+  const wrap = document.querySelector('.table-wrap');
+  const table = document.querySelector('.torrent-table');
+  const cols = [...document.querySelectorAll('.torrent-table colgroup col')].reduce(
+    (sum, col) => sum + Number.parseFloat(col.style.width),
+    0,
+  );
+  return {
+    wrap: wrap?.clientWidth ?? 0,
+    table: Math.round(table?.getBoundingClientRect().width ?? 0),
+    cols: Math.round(cols),
+    scrolls: Boolean(wrap) && wrap.scrollWidth > wrap.clientWidth + 1,
+  };
+});
+check(
+  'the table follows the window width after a resize',
+  Math.abs(reflow.cols - reflow.wrap) <= 2 &&
+    Math.abs(reflow.table - reflow.wrap) <= 2 &&
+    !reflow.scrolls,
+  JSON.stringify(reflow),
+);
+await page.setViewportSize({ width: 1100, height: 700 });
 await page.waitForTimeout(200);
 
 check('no console/page errors', errors.length === 0, errors.join(' | '));

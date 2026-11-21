@@ -1,5 +1,7 @@
 import type {
   AddTorrentOptions,
+  ConnectionChange,
+  ConnectionSettings,
   FilePriority,
   HandlerStatus,
   LinkPayload,
@@ -58,6 +60,12 @@ export interface TorrentProvider {
   moveBy(id: string, delta: -1 | 1): Promise<void>;
   setMaxActive(maxActive: number): Promise<void>;
   setLimits(limits: { downLimit: number; upLimit: number }): Promise<void>;
+  /**
+   * UPnP, uTP, the peer limit and the extra trackers. The limit and the
+   * trackers are used by the next torrents; a changed listener (UPnP / uTP) is
+   * reported as `restartRequired` instead of being applied silently.
+   */
+  setConnectionSettings?(settings: ConnectionSettings): Promise<ConnectionChange>;
   /** Folder new torrents are written to (Tauri: engine default). */
   setDownloadDir?(dir: string): Promise<void>;
 

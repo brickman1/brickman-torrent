@@ -16,6 +16,8 @@ in a normal browser against a mock provider.
   "maximum active downloads" (default 1) decides how many run at once,
 - drag and drop of rows to reorder the queue, plus move up / down / to a
   position,
+- resizable table columns: drag a header divider, double-click it to fit the
+  column to its content, and the widths are remembered,
 - global up/down limits,
 - per-file selection (download / don't download),
 - torrent file paths are validated before anything is written, so a hostile

@@ -1,9 +1,14 @@
-// Settings form (files, queue, bandwidth, updates, appearance).
+// Settings form (files, queue, connections, bandwidth, updates, appearance).
 
 import type { TorrentProvider } from '../core/provider';
+import { normalizeTrackers, withPopularTrackers } from '../core/trackers';
 import {
+  EXTRA_TRACKERS_LIMIT,
+  PEER_LIMIT_MAX,
+  PEER_LIMIT_MIN,
   POWER_DELAY_MAX,
   POWER_DELAY_MIN,
+  normalizePeerLimit,
   normalizePowerAction,
   normalizePowerDelay,
   withRecentFolder,
@@ -103,6 +108,77 @@ export function buildSettingsForm(
     el('div', { class: 'folder-hint-row' }, pathHint, openFolder),
   );
 
+  // "Connections": how many peers a download can reach, and where it announces.
+  // The listener options (UPnP, uTP) are read once at startup, so a change is
+  // only promised after a restart; the limit and the trackers are live.
+  const upnp = checkbox(settings.upnpEnabled);
+  const utp = checkbox(settings.utpEnabled);
+  const peerLimit = numberInput(settings.peerLimit, PEER_LIMIT_MIN, PEER_LIMIT_MAX);
+  peerLimit.classList.add('peer-limit');
+
+  const peerLimitWarning = el('p', {
+    class: 'hint field-warning peer-limit-warning',
+    text: t('settings.peerLimitRange', { min: PEER_LIMIT_MIN, max: PEER_LIMIT_MAX }),
+  });
+  const updatePeerLimitWarning = (): void => {
+    const value = Math.round(Number(peerLimit.value));
+    peerLimitWarning.hidden =
+      Number.isFinite(value) && value >= PEER_LIMIT_MIN && value <= PEER_LIMIT_MAX;
+  };
+  peerLimit.addEventListener('input', updatePeerLimitWarning);
+  updatePeerLimitWarning();
+
+  const restartHint = el('p', {
+    class: 'hint field-warning restart-hint',
+    text: t('settings.restartHint'),
+  });
+  const updateRestartHint = (): void => {
+    restartHint.hidden =
+      upnp.checked === settings.upnpEnabled && utp.checked === settings.utpEnabled;
+  };
+  upnp.addEventListener('change', updateRestartHint);
+  utp.addEventListener('change', updateRestartHint);
+  updateRestartHint();
+
+  const trackerArea = el('textarea', {
+    class: 'text-input trackers-input',
+    rows: 6,
+    spellcheck: 'false',
+    placeholder: 'udp://tracker.example.org:1337/announce',
+  });
+  trackerArea.value = settings.extraTrackers.join('\n');
+
+  const trackersCount = el('span', { class: 'hint trackers-count' });
+  const trackersWarning = el('p', { class: 'hint field-warning trackers-warning' });
+  const updateTrackersState = (): void => {
+    const valid = normalizeTrackers(trackerArea.value);
+    trackersCount.textContent = t('settings.trackersCount', {
+      count: valid.length,
+      max: EXTRA_TRACKERS_LIMIT,
+    });
+    const lines = trackerArea.value
+      .split(/\r?\n/)
+      .filter((line) => line.trim() !== '' && !line.trim().startsWith('#')).length;
+    const dropped = lines - valid.length;
+    trackersWarning.hidden = dropped <= 0;
+    trackersWarning.textContent = t('settings.trackersSkipped', {
+      count: Math.max(0, dropped),
+      max: EXTRA_TRACKERS_LIMIT,
+    });
+  };
+  trackerArea.addEventListener('input', updateTrackersState);
+  updateTrackersState();
+
+  const popularTrackers = el('button', {
+    class: 'btn add-popular-trackers',
+    type: 'button',
+    text: t('settings.addPopularTrackers'),
+  });
+  popularTrackers.addEventListener('click', () => {
+    trackerArea.value = withPopularTrackers(trackerArea.value.split(/\r?\n/)).join('\n');
+    updateTrackersState();
+  });
+
   const theme = el(
     'select',
     { class: 'text-input select-input' },
@@ -110,7 +186,6 @@ export function buildSettingsForm(
     selectOption('dark', t('settings.dark')),
   );
   theme.value = settings.theme;
-
   const language = el(
     'select',
     { class: 'text-input select-input' },
@@ -173,6 +248,35 @@ export function buildSettingsForm(
 
     el('div', { class: 'settings-section', text: t('settings.sectionQueue') }),
     field(t('settings.maxActive'), maxActive, t('settings.maxActiveHint')),
+
+    el('div', { class: 'settings-section', text: t('settings.sectionConnections') }),
+    el(
+      'label',
+      { class: 'check-row' },
+      upnp,
+      el('span', { text: t('settings.upnp') }),
+    ),
+    el('p', { class: 'hint', text: t('settings.upnpHint') }),
+    el(
+      'label',
+      { class: 'check-row' },
+      utp,
+      el('span', { text: t('settings.utp') }),
+    ),
+    el('p', { class: 'hint', text: t('settings.utpHint') }),
+    field(t('settings.peerLimit'), peerLimit, t('settings.peerLimitHint')),
+    peerLimitWarning,
+    el(
+      'div',
+      { class: 'field' },
+      el('span', { class: 'field-label', text: t('settings.extraTrackers') }),
+      trackerArea,
+      el('div', { class: 'trackers-actions' }, popularTrackers, trackersCount),
+      trackersWarning,
+      el('p', { class: 'hint', text: t('settings.trackersHint') }),
+      el('p', { class: 'hint', text: t('settings.popularTrackersHint') }),
+    ),
+    restartHint,
 
     el('div', { class: 'settings-section', text: t('settings.sectionPower') }),
     field(t('settings.powerAction'), powerAction, t('settings.powerActionHint')),
@@ -237,6 +341,12 @@ export function buildSettingsForm(
       onDownloadsComplete: normalizePowerAction(powerAction.value),
       powerDelaySecs: normalizePowerDelay(powerDelay.value),
       recentFolders,
+      // Not edited here: kept so applying the dialog does not lose the drag.
+      columnWidths: settings.columnWidths,
+      upnpEnabled: upnp.checked,
+      utpEnabled: utp.checked,
+      peerLimit: normalizePeerLimit(peerLimit.value),
+      extraTrackers: normalizeTrackers(trackerArea.value),
     };
   };
 

@@ -11,9 +11,11 @@ use bytes::Bytes;
 use librqbit::api::TorrentIdOrHash;
 use librqbit::limits::LimitsConfig;
 use librqbit::{
-    AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, ListenerOptions,
-    ManagedTorrent, Session, SessionOptions, SessionPersistenceConfig, TorrentStatsState,
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, ListenerMode,
+    ListenerOptions, ManagedTorrent, Session, SessionOptions, SessionPersistenceConfig,
+    TorrentStatsState,
 };
+use url::Url;
 
 use crate::error::Error;
 use crate::model::{
@@ -26,6 +28,75 @@ use crate::state::State;
 /// How long to wait for magnet metadata by default.
 pub const DEFAULT_METADATA_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Default number of concurrently connected peers per torrent.
+pub const DEFAULT_PEER_LIMIT: u32 = 200;
+
+/// Smallest per-torrent peer limit this crate accepts (`0` means "no limit").
+pub const MIN_PEER_LIMIT: u32 = 1;
+
+/// Largest per-torrent peer limit; more peers than this only costs memory.
+pub const MAX_PEER_LIMIT: u32 = 1000;
+
+/// How many extra trackers are kept; the rest of the input is dropped.
+pub const MAX_EXTRA_TRACKERS: usize = 50;
+
+/// Network options that decide how many peers a download can reach.
+///
+/// The per-add options ([`ConnectionOptions::peer_limit`] and the trackers) are
+/// applied to every torrent added from now on. The listener options (UPnP and
+/// uTP) are decided when the session starts: librqbit builds the listener once
+/// and exposes no API to re-open it, so changing them needs a new process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionOptions {
+    /// Ask the router to forward the listening port over UPnP (TCP).
+    pub upnp_port_forwarding: bool,
+    /// Listen for incoming uTP (UDP) connections next to TCP.
+    pub utp_enabled: bool,
+    /// Concurrent peers per torrent; `None`/`Some(0)` = no limit.
+    pub peer_limit: Option<u32>,
+    /// Trackers added to every torrent, one URL per entry (lines are split).
+    pub extra_trackers: Vec<String>,
+}
+
+impl Default for ConnectionOptions {
+    fn default() -> Self {
+        Self {
+            // Both are safe defaults: a closed port is the only thing they can
+            // cost, and without them a NAT'ed machine has few incoming peers.
+            upnp_port_forwarding: true,
+            utp_enabled: true,
+            peer_limit: Some(DEFAULT_PEER_LIMIT),
+            extra_trackers: Vec::new(),
+        }
+    }
+}
+
+impl ConnectionOptions {
+    /// A copy with validated trackers and a clamped peer limit.
+    ///
+    /// Junk in the tracker list is dropped instead of failing the whole
+    /// setting: one broken line must not stop the user from saving.
+    pub fn normalized(&self) -> Self {
+        Self {
+            upnp_port_forwarding: self.upnp_port_forwarding,
+            utp_enabled: self.utp_enabled,
+            peer_limit: normalize_peer_limit(self.peer_limit),
+            extra_trackers: derived_trackers(&self.extra_trackers),
+        }
+    }
+}
+
+/// What [`Downloader::set_connection_options`] did and what it could not do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectionChange {
+    /// The listener (UPnP / uTP) differs from the running one: restart needed.
+    pub restart_required: bool,
+    /// Peer limit applied to torrents added from now on (`None` = no limit).
+    pub peer_limit: Option<u32>,
+    /// Number of valid, de-duplicated extra trackers that are now in effect.
+    pub trackers: usize,
+}
+
 /// Options for [`Downloader::new`].
 #[derive(Debug, Clone)]
 pub struct DownloaderOptions {
@@ -36,6 +107,8 @@ pub struct DownloaderOptions {
     /// Enable DHT, LSD and the incoming TCP listener. Only commands that
     /// actually need the network (`add`, `run`) should turn this on.
     pub networking: bool,
+    /// UPnP, uTP, peer limit and extra trackers.
+    pub connections: ConnectionOptions,
 }
 
 impl DownloaderOptions {
@@ -45,6 +118,7 @@ impl DownloaderOptions {
             data_dir,
             download_dir,
             networking: true,
+            connections: ConnectionOptions::default(),
         }
     }
 
@@ -53,6 +127,30 @@ impl DownloaderOptions {
         self.networking = false;
         self
     }
+
+    /// Replaces the network options.
+    pub fn with_connections(mut self, connections: ConnectionOptions) -> Self {
+        self.connections = connections;
+        self
+    }
+}
+
+/// Listener settings the running session was started with.
+///
+/// librqbit creates the TCP/uTP listeners and the UPnP forwarder once, inside
+/// `Session::new_with_opts`; neither can be changed afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ListenerState {
+    upnp_port_forwarding: bool,
+    utp_enabled: bool,
+}
+
+/// Options in effect at runtime: the listener is fixed, the rest follows the
+/// user's settings and is applied to the next added torrent.
+#[derive(Debug, Clone)]
+struct AppliedConnections {
+    listener: ListenerState,
+    options: ConnectionOptions,
 }
 
 /// Options for [`Downloader::add`].
@@ -96,6 +194,8 @@ pub struct Downloader {
     /// their snapshots (the UI sends several commands at once).
     save_lock: Mutex<()>,
     download_dir: PathBuf,
+    /// Network options: the listener is fixed, the rest is live.
+    connections: Mutex<AppliedConnections>,
     closed: AtomicBool,
 }
 
@@ -115,17 +215,38 @@ impl Downloader {
             .enable_all()
             .build()?;
 
+        // Validate once here: the session and the runtime options must agree.
+        let connections = options.connections.normalized();
+        let listener_state = ListenerState {
+            upnp_port_forwarding: connections.upnp_port_forwarding,
+            utp_enabled: connections.utp_enabled,
+        };
+        let listener = ListenerOptions {
+            // uTP is a second transport next to TCP: librqbit binds a UDP
+            // socket to the same port and accepts `utp` handshakes there.
+            mode: if connections.utp_enabled {
+                ListenerMode::TcpAndUtp
+            } else {
+                ListenerMode::TcpOnly
+            },
+            enable_upnp_port_forwarding: connections.upnp_port_forwarding,
+            ..Default::default()
+        };
+        let trackers = parse_trackers(&connections.extra_trackers);
+
         let session_options = SessionOptions {
             dht: options.networking.then(DhtSessionConfig::default),
-            listen: options
-                .networking
-                .then(ListenerOptions::default),
+            listen: options.networking.then_some(listener),
             fastresume: true,
             persistence: Some(SessionPersistenceConfig::Json {
                 folder: Some(data_dir.join("session")),
             }),
             ratelimits: limits_config(&state),
             disable_local_service_discovery: !options.networking,
+            // Session-wide list: announced by every torrent the engine runs,
+            // including the ones restored from the previous run.
+            trackers: trackers.into_iter().collect(),
+            peer_limit: connections.peer_limit.map(peer_limit_usize),
             client_name_and_version: Some(format!(
                 "brickman-torrent/{}",
                 env!("CARGO_PKG_VERSION")
@@ -142,10 +263,41 @@ impl Downloader {
             state: Mutex::new(state),
             save_lock: Mutex::new(()),
             download_dir,
+            connections: Mutex::new(AppliedConnections {
+                listener: listener_state,
+                options: connections,
+            }),
             closed: AtomicBool::new(false),
         };
         downloader.enforce_idle()?;
         Ok(downloader)
+    }
+
+    /// Network options in effect right now.
+    pub fn connection_options(&self) -> ConnectionOptions {
+        self.with_connections(|applied| applied.options.clone())
+    }
+
+    /// Applies new network options.
+    ///
+    /// The peer limit and the extra trackers are used by the *next* added
+    /// torrent. UPnP and uTP belong to the listener, which librqbit creates
+    /// once; a change there is only reported as `restart_required`, it is not
+    /// pretended to be applied.
+    pub fn set_connection_options(&self, options: ConnectionOptions) -> ConnectionChange {
+        let options = options.normalized();
+        self.with_connections(|applied| {
+            let listener = applied.listener;
+            let restart_required = options.upnp_port_forwarding != listener.upnp_port_forwarding
+                || options.utp_enabled != listener.utp_enabled;
+            let trackers = parse_trackers(&options.extra_trackers).len();
+            applied.options = options.clone();
+            ConnectionChange {
+                restart_required,
+                peer_limit: options.peer_limit,
+                trackers,
+            }
+        })
     }
 
     /// Path of the queue state file.
@@ -200,10 +352,18 @@ impl Downloader {
             _ => output_root,
         };
 
+        let connections = self.connection_options();
+        let trackers = parse_trackers(&connections.extra_trackers);
         let add_options = AddTorrentOptions {
             paused: true,
             overwrite: true,
             output_folder: Some(output_folder.to_string_lossy().into_owned()),
+            // Both are per-add in librqbit 9.1.0, so a changed limit or tracker
+            // list applies to the next torrent without restarting the session.
+            peer_limit: connections.peer_limit.map(peer_limit_usize),
+            trackers: (!trackers.is_empty()).then(|| {
+                trackers.iter().map(ToString::to_string).collect()
+            }),
             ..Default::default()
         };
         let response = self.rt.block_on(
@@ -380,6 +540,7 @@ impl Downloader {
     pub fn session_stats(&self) -> SessionView {
         let snapshot = self.session.stats_snapshot();
         let state = self.with_state(|s| s.clone());
+        let applied = self.with_connections(|applied| applied.clone());
         let active = self
             .handles()
             .iter()
@@ -402,6 +563,13 @@ impl Downloader {
             active: u32::try_from(active).unwrap_or(u32::MAX),
             port,
             port_open: listen_addr.is_some(),
+            // The listener is created once, so these are what the session was
+            // started with, not what a changed setting asks for.
+            upnp_requested: applied.listener.upnp_port_forwarding,
+            utp_enabled: applied.listener.utp_enabled,
+            peer_limit: applied.options.peer_limit.unwrap_or(0),
+            peers_tcp: snapshot.peers.live_tcp,
+            peers_utp: snapshot.peers.live_utp,
             dht_nodes: u32::try_from(dht_nodes).unwrap_or(u32::MAX),
             max_active: state.max_active,
             down_limit_bps: state.limits.down_bps.unwrap_or(0),
@@ -530,12 +698,18 @@ impl Downloader {
         let (moved_files, failed_moves) = relocate_files(&old_dir, new_dir, &relative);
 
         // 3. Add the same torrent back at the new place, reusing the id.
+        let connections = self.connection_options();
+        let trackers = parse_trackers(&connections.extra_trackers);
         let add_options = AddTorrentOptions {
             paused: true,
             overwrite: true,
             output_folder: Some(new_dir.to_string_lossy().into_owned()),
             only_files: only_files.clone(),
             preferred_id: Some(id.as_usize()),
+            peer_limit: connections.peer_limit.map(peer_limit_usize),
+            trackers: (!trackers.is_empty()).then(|| {
+                trackers.iter().map(ToString::to_string).collect()
+            }),
             ..Default::default()
         };
         let response = self.rt.block_on(
@@ -822,7 +996,11 @@ impl Downloader {
                     .block_on(self.session.add_torrent(add, Some(options)))?
             }
             Source::Magnet(url) => {
-                let add = AddTorrent::from_url(url.clone());
+                // Trackers typed in the settings help the metadata exchange:
+                // librqbit ignores `AddTorrentOptions::trackers` for magnets and
+                // reads the `tr` parameters of the link itself instead.
+                let trackers = parse_trackers(&self.connection_options().extra_trackers);
+                let add = AddTorrent::from_url(with_tracker_params(url, &trackers));
                 let options = AddTorrentOptions {
                     paused: true,
                     list_only: true,
@@ -1007,6 +1185,14 @@ impl Downloader {
 
     fn with_state<R>(&self, f: impl FnOnce(&mut State) -> R) -> R {
         let mut guard = match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        f(&mut guard)
+    }
+
+    fn with_connections<R>(&self, f: impl FnOnce(&mut AppliedConnections) -> R) -> R {
+        let mut guard = match self.connections.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
@@ -1257,5 +1443,212 @@ fn non_zero_bps(value: Option<u64>) -> Result<Option<std::num::NonZeroU32>, Erro
             })?;
             Ok(std::num::NonZeroU32::new(bps))
         }
+    }
+}
+
+/// Validates the tracker URLs the user typed.
+///
+/// Entries are split on newlines, so a text area with one URL per line and a
+/// single comma-free string both work. Only `udp://`, `http://` and `https://`
+/// announces with a host are kept; anything else (a magnet link, a bare word,
+/// `http://` without a host, an unsupported scheme) is dropped instead of
+/// failing the whole setting. The result is de-duplicated by exact URL and
+/// capped at [`MAX_EXTRA_TRACKERS`].
+pub fn parse_trackers(entries: &[String]) -> Vec<Url> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut trackers = Vec::new();
+    for entry in entries {
+        for line in entry.split(['\n', '\r']) {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Ok(url) = Url::parse(line) else {
+                continue;
+            };
+            if !matches!(url.scheme(), "udp" | "http" | "https") {
+                continue;
+            }
+            if url.host_str().is_none_or(str::is_empty) {
+                continue;
+            }
+            let key = url.to_string();
+            if !seen.insert(key) {
+                continue;
+            }
+            trackers.push(url);
+            if trackers.len() >= MAX_EXTRA_TRACKERS {
+                return trackers;
+            }
+        }
+    }
+    trackers
+}
+
+/// Validated tracker list as the strings the engine and the API take.
+fn derived_trackers(entries: &[String]) -> Vec<String> {
+    parse_trackers(entries)
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// `None`/`0` means "no limit"; anything else is clamped into the supported
+/// range, because a limit of ten million peers can only exhaust memory.
+pub fn normalize_peer_limit(value: Option<u32>) -> Option<u32> {
+    match value {
+        None | Some(0) => None,
+        Some(value) => Some(value.clamp(MIN_PEER_LIMIT, MAX_PEER_LIMIT)),
+    }
+}
+
+/// The engine takes the limit as a `usize`.
+fn peer_limit_usize(limit: u32) -> usize {
+    usize::try_from(limit).unwrap_or(usize::MAX)
+}
+
+/// Adds the validated trackers to a magnet link as `tr` parameters.
+///
+/// librqbit only reads the `tr` parameters of a magnet when it looks for
+/// metadata, so this is what makes a changed tracker list work for a magnet
+/// without restarting the session. Values are percent-encoded; a link that is
+/// not a magnet is returned unchanged.
+fn with_tracker_params(link: &str, trackers: &[Url]) -> String {
+    if trackers.is_empty() || !link.starts_with("magnet:") {
+        return link.to_string();
+    }
+    let mut result = link.trim().to_string();
+    for tracker in trackers {
+        let encoded: String =
+            url::form_urlencoded::byte_serialize(tracker.as_str().as_bytes()).collect();
+        result.push_str(if result.contains('?') { "&tr=" } else { "?tr=" });
+        result.push_str(&encoded);
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_string()).collect()
+    }
+
+    #[test]
+    fn tracker_input_is_validated() {
+        let parsed = parse_trackers(&strings(&[
+            " udp://tracker.opentrackr.org:1337/announce ",
+            "http://tracker.example.org:80/announce",
+            "https://tracker.example.net/announce",
+            // Everything below must be dropped.
+            "",
+            "   ",
+            "# a comment",
+            "not a url",
+            "http://",
+            "ftp://tracker.example.org/announce",
+            "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+            "ws://tracker.example.org/announce",
+        ]));
+        assert_eq!(parsed.len(), 3, "{parsed:?}");
+        assert_eq!(parsed[0].scheme(), "udp");
+        assert_eq!(parsed[1].scheme(), "http");
+        assert_eq!(parsed[2].scheme(), "https");
+        assert_eq!(parsed[0].host_str(), Some("tracker.opentrackr.org"));
+    }
+
+    #[test]
+    fn tracker_list_is_deduplicated_and_capped() {
+        let mut entries = strings(&[
+            "udp://tracker.example.org:1337/announce",
+            "udp://tracker.example.org:1337/announce",
+            "  udp://tracker.example.org:1337/announce  ",
+        ]);
+        // One entry holding several lines works like several entries.
+        entries.push(
+            "udp://a.example/announce\nudp://b.example/announce\r\nudp://c.example/announce"
+                .to_string(),
+        );
+        let parsed = parse_trackers(&entries);
+        let urls: Vec<&str> = parsed.iter().map(Url::as_str).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "udp://tracker.example.org:1337/announce",
+                "udp://a.example/announce",
+                "udp://b.example/announce",
+                "udp://c.example/announce",
+            ]
+        );
+
+        let many: Vec<String> = (0..(MAX_EXTRA_TRACKERS + 20))
+            .map(|index| format!("udp://tracker{index}.example.org:6969/announce"))
+            .collect();
+        assert_eq!(parse_trackers(&many).len(), MAX_EXTRA_TRACKERS);
+    }
+
+    #[test]
+    fn connection_defaults_reach_more_peers() {
+        let defaults = ConnectionOptions::default();
+        assert!(defaults.upnp_port_forwarding);
+        assert!(defaults.utp_enabled);
+        assert_eq!(defaults.peer_limit, Some(DEFAULT_PEER_LIMIT));
+        assert_eq!(defaults.peer_limit, Some(200));
+        assert!(defaults.extra_trackers.is_empty());
+
+        // The normalized copy keeps the switches, cleans the list and the limit.
+        let dirty = ConnectionOptions {
+            upnp_port_forwarding: false,
+            utp_enabled: true,
+            peer_limit: Some(5),
+            extra_trackers: strings(&["udp://tracker.example.org:1337/announce", "junk"]),
+        };
+        let clean = dirty.normalized();
+        assert!(!clean.upnp_port_forwarding);
+        assert!(clean.utp_enabled);
+        assert_eq!(clean.peer_limit, Some(5));
+        assert_eq!(clean.extra_trackers.len(), 1);
+        assert_eq!(clean.extra_trackers[0], "udp://tracker.example.org:1337/announce");
+    }
+
+    #[test]
+    fn peer_limit_is_clamped_or_unlimited() {
+        assert_eq!(normalize_peer_limit(None), None);
+        assert_eq!(normalize_peer_limit(Some(0)), None);
+        assert_eq!(normalize_peer_limit(Some(1)), Some(1));
+        assert_eq!(normalize_peer_limit(Some(200)), Some(200));
+        assert_eq!(normalize_peer_limit(Some(1000)), Some(1000));
+        assert_eq!(normalize_peer_limit(Some(100_000)), Some(MAX_PEER_LIMIT));
+    }
+
+    #[test]
+    fn magnet_gets_the_extra_trackers_as_parameters() {
+        let trackers = parse_trackers(&strings(&[
+            "udp://tracker.opentrackr.org:1337/announce",
+            "http://tracker.example.org/announce?a=b",
+        ]));
+        let link = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Test";
+        let result = with_tracker_params(link, &trackers);
+        assert!(result.starts_with(link));
+        assert!(result.contains("&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"));
+        assert!(result.contains("&tr=http%3A%2F%2Ftracker.example.org%2Fannounce%3Fa%3Db"));
+
+        // The magnet parser of the engine gets the original URLs back.
+        let magnet = librqbit::Magnet::parse(&result).expect("parse");
+        assert_eq!(
+            magnet.trackers,
+            vec![
+                "udp://tracker.opentrackr.org:1337/announce".to_string(),
+                "http://tracker.example.org/announce?a=b".to_string(),
+            ]
+        );
+
+        // Nothing to add, and a non-magnet link is left alone.
+        assert_eq!(with_tracker_params(link, &[]), link);
+        assert_eq!(
+            with_tracker_params("https://example.org/file.torrent", &trackers),
+            "https://example.org/file.torrent"
+        );
     }
 }

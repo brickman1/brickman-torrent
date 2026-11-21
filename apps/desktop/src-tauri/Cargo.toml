@@ -18,7 +18,15 @@ brickman-core.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+# Handles a second launch (`app.exe magnet:…`): the first window gets the
+# arguments and no second engine starts on the same state folder.
+tauri-plugin-single-instance = "2"
 tokio = { workspace = true, features = ["sync"] }
 serde.workspace = true
 serde_json.workspace = true
 reqwest.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Clipboard text for Ctrl+V ("paste a magnet link") and HKCU handler keys.
+arboard = "3"
+winreg = "0.56"

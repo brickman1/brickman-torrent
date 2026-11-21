@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -15,11 +16,19 @@ use brickman_core::{
     TorrentState, TorrentView, default_data_dir, default_download_dir, now_ms,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
+mod handler;
+mod launch;
 mod power;
+
+/// Event that carries a `magnet:` link or a `.torrent` file to the window.
+const LINK_EVENT: &str = "link-received";
+/// Upper bound of the clipboard text handed to the UI: a magnet link is well
+/// under 1 KiB, and a pasted document must not travel to the frontend.
+const CLIPBOARD_LIMIT: usize = 8 * 1024;
 
 /// Release feed checked by `check_for_updates`.
 const UPDATE_URL: &str = "https://api.github.com/repos/brickman1/brickman-torrent/releases/latest";
@@ -240,6 +249,12 @@ fn user_message(error: brickman_core::Error) -> String {
 
 struct AppState {
     engine: tokio::sync::Mutex<Option<Arc<Engine>>>,
+    /// Set once `engine_init` created the engine: only then can the window
+    /// receive a `link-received` event.
+    engine_ready: AtomicBool,
+    /// Links that arrived before the engine existed (a `magnet:` link on the
+    /// command line of the first launch); `engine_init` flushes them.
+    links: Mutex<Vec<launch::LinkPayload>>,
     /// `.torrent` files passed on the command line; added once the UI told us
     /// where to download to.
     pending: Mutex<Vec<PathBuf>>,
@@ -270,6 +285,27 @@ where
     tauri::async_runtime::spawn_blocking(task)
         .await
         .map_err(|error| format!("engine task failed: {error}"))?
+}
+
+/// Sends a link to the window; a failure is logged, not fatal: the app keeps
+/// running, only this link is lost.
+fn emit_link(app: &AppHandle, payload: launch::LinkPayload) {
+    if let Err(error) = app.emit(LINK_EVENT, payload) {
+        eprintln!("[brickman-torrent] cannot send {LINK_EVENT}: {error}");
+    }
+}
+
+/// Hands a link to the window. Before the engine exists the window is still
+/// starting and cannot receive events yet, so the link is queued instead and
+/// `engine_init` flushes the queue.
+fn deliver_link(app: &AppHandle, target: &launch::LaunchTarget) {
+    let payload = launch::LinkPayload::new(target);
+    let state = app.state::<AppState>();
+    if state.engine_ready.load(Ordering::Acquire) {
+        emit_link(app, payload);
+    } else {
+        lock(&state.links).push(payload);
+    }
 }
 
 // ------------------------------------------------------------------ mapping
@@ -368,6 +404,7 @@ fn kb_to_bps(kilobytes: u64) -> Option<u64> {
 #[tauri::command]
 async fn engine_init(
     download_dir: Option<String>,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let dir = match download_dir
@@ -402,6 +439,15 @@ async fn engine_init(
     .await?;
 
     *guard = Some(Arc::new(engine));
+    drop(guard);
+
+    // The window registers its `link-received` listener before it calls
+    // `engine_init`, so this is the first moment a link found on the command
+    // line of the first launch can be delivered.
+    state.engine_ready.store(true, Ordering::Release);
+    for payload in std::mem::take(&mut *lock(&state.links)) {
+        emit_link(&app, payload);
+    }
     Ok(())
 }
 
@@ -1117,6 +1163,90 @@ async fn open_external(url: String, app: AppHandle) -> Result<(), String> {
         .map_err(|error| format!("cannot open {url}: {error}"))
 }
 
+// ------------------------------------------------------- links and handlers
+
+/// Text from the clipboard, for Ctrl+V in the "add link" dialog.
+///
+/// Only text is read. An image or a copied file is not an error, it simply has
+/// no text; the result is trimmed and cut at [`CLIPBOARD_LIMIT`].
+#[tauri::command]
+async fn read_clipboard() -> Result<Option<String>, String> {
+    run_blocking(|| {
+        #[cfg(windows)]
+        {
+            let mut clipboard = arboard::Clipboard::new()
+                .map_err(|error| format!("cannot open the clipboard: {error}"))?;
+            match clipboard.get_text() {
+                Ok(text) => Ok(clipboard_text(&text)),
+                Err(arboard::Error::ContentNotAvailable) => Ok(None),
+                Err(error) => Err(format!("cannot read the clipboard: {error}")),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            Err("the clipboard is only supported on Windows".to_string())
+        }
+    })
+    .await
+}
+
+/// Trims the clipboard text, drops it when empty and cuts it at
+/// [`CLIPBOARD_LIMIT`] without splitting a multi-byte character.
+fn clipboard_text(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if text.len() <= CLIPBOARD_LIMIT {
+        return Some(text.to_string());
+    }
+    let mut end = CLIPBOARD_LIMIT;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(text[..end].trim_end().to_string())
+}
+
+/// This executable: what the shell has to run for a link or a file.
+fn exe_path() -> PathBuf {
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("brickman-desktop.exe"))
+}
+
+/// Whether the app is the `magnet:` handler and whether a backup of the
+/// previous handlers exists.
+#[tauri::command]
+async fn handler_status() -> Result<handler::HandlerStatus, String> {
+    run_blocking(|| Ok(handler::status(&exe_path(), &default_data_dir()))).await
+}
+
+/// Makes the app the `magnet:` and `.torrent` handler (per user, no admin
+/// rights). The previous handlers are backed up before anything changes; the
+/// answer is the new status, with `error` set when the registration failed.
+#[tauri::command]
+async fn handler_register() -> Result<handler::HandlerStatus, String> {
+    run_blocking(|| {
+        let (exe, data_dir) = (exe_path(), default_data_dir());
+        let error = handler::register(&exe, &data_dir).err();
+        let mut status = handler::status(&exe, &data_dir);
+        status.error = error;
+        Ok(status)
+    })
+    .await
+}
+
+/// Puts the handlers that were there before back and removes the backup.
+#[tauri::command]
+async fn handler_unregister() -> Result<handler::HandlerStatus, String> {
+    run_blocking(|| {
+        let (exe, data_dir) = (exe_path(), default_data_dir());
+        let error = handler::unregister(&data_dir).err();
+        let mut status = handler::status(&exe, &data_dir);
+        status.error = error;
+        Ok(status)
+    })
+    .await
+}
+
 // ------------------------------------------------------- power after download
 
 /// State of the "power off when downloads finish" monitor, polled once a second
@@ -1151,25 +1281,43 @@ fn cancel_power_off(state: State<'_, AppState>) -> Result<power::PowerStatusDto,
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // `app.exe C:\path\to\file.torrent` adds the torrent once the UI has told
-    // the engine where to download to.
-    let pending: Vec<PathBuf> = std::env::args()
-        .skip(1)
-        .filter(|arg| !arg.starts_with('-'))
-        .map(PathBuf::from)
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("torrent"))
-        })
-        .collect();
+    // A link or a `.torrent` file handed over by the shell. An existing torrent
+    // file keeps the old path: `app.exe C:\path\to\file.torrent` is added once
+    // the UI has told the engine where to download to. Everything else becomes
+    // a `link-received` event after the engine exists, so the window can open
+    // its add dialog (a magnet link, or a `.torrent` file that is gone).
+    let mut pending: Vec<PathBuf> = Vec::new();
+    let mut links: Vec<launch::LinkPayload> = Vec::new();
+    if let Some(target) = launch::parse_launch_args(std::env::args().skip(1)) {
+        match target {
+            launch::LaunchTarget::Torrent(path) if launch::is_existing_torrent(&path) => {
+                pending.push(path);
+            }
+            other => links.push(launch::LinkPayload::new(&other)),
+        }
+    }
 
     tauri::Builder::default()
+        // Must be the first plugin: a second launch (`app.exe magnet:?…`) has to
+        // reach the running app before anything else could start a second
+        // engine on the same data folder.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(target) = launch::parse_launch_args(argv.into_iter().skip(1)) {
+                deliver_link(app, &target);
+            }
+            // The link lands in the window of the running app: bring it up.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             engine: tokio::sync::Mutex::new(None),
+            engine_ready: AtomicBool::new(false),
+            links: Mutex::new(links),
             pending: Mutex::new(pending),
             power: Arc::new(power::PowerState::new(&default_data_dir())),
         })
@@ -1202,10 +1350,47 @@ pub fn run() {
             list_peers,
             check_for_updates,
             open_external,
+            read_clipboard,
+            handler_status,
+            handler_register,
+            handler_unregister,
             get_power_status,
             set_power_settings,
             cancel_power_off,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_text_is_trimmed() {
+        assert_eq!(
+            clipboard_text("  magnet:?xt=urn:btih:abc \r\n"),
+            Some("magnet:?xt=urn:btih:abc".to_string())
+        );
+        assert_eq!(clipboard_text(""), None);
+        assert_eq!(clipboard_text(" \t\r\n"), None);
+    }
+
+    #[test]
+    fn clipboard_text_is_cut_at_the_limit() {
+        let long = "a".repeat(CLIPBOARD_LIMIT + 100);
+        let text = clipboard_text(&long).expect("text");
+        assert_eq!(text.len(), CLIPBOARD_LIMIT);
+
+        // A two-byte character at the limit is dropped whole, not split.
+        let long = format!("{}ж", "a".repeat(CLIPBOARD_LIMIT - 1));
+        let text = clipboard_text(&long).expect("text");
+        assert_eq!(text.len(), CLIPBOARD_LIMIT - 1);
+        assert!(text.ends_with('a'));
+
+        assert_eq!(
+            clipboard_text("magnet:?xt=urn:btih:abc").as_deref(),
+            Some("magnet:?xt=urn:btih:abc")
+        );
+    }
 }

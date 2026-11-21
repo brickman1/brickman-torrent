@@ -127,7 +127,10 @@ body {
 }
 
 body {
-  font-family: Inter, 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+  /* Latin faces first; the CJK fallbacks keep 简体中文 from rendering with a
+     substituted (or missing) Han face. They are never picked for Latin text. */
+  font-family: Inter, 'Segoe UI Variable', 'Segoe UI', system-ui, 'Microsoft YaHei',
+    'PingFang SC', 'Noto Sans CJK SC', sans-serif;
   font-size: 11px;
   color: var(--text);
   background: var(--surface);
@@ -432,6 +435,12 @@ button {
   height: 28px;
   padding: 0 8px;
   background: var(--header-bg);
+  /* Translated headers can be longer than the English ones ("Semillas",
+     "Pozostało"): clip with an ellipsis instead of pushing the column wider.
+     The full text stays available in the cell's title attribute. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   border-bottom: 1px solid var(--border);
   color: var(--text-dim);
   font-weight: 500;

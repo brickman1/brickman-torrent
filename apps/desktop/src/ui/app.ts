@@ -22,7 +22,7 @@ import {
   type UpdateInfo,
 } from '../core/types';
 import { APP_VERSION } from '../core/version';
-import { getLocale, setLocale, t } from '../i18n';
+import { getLocale, isLocale, LOCALES, LOCALE_NAMES, setLocale, t } from '../i18n';
 import { openAddDialog, type AddDialogRequest } from './add-dialog';
 import { openChangeFolderDialog } from './change-folder-dialog';
 import { renderDetails as renderDetailsPanel, type DetailTab } from './details';
@@ -215,12 +215,13 @@ export class App {
     const localeSelect = el(
       'select',
       { class: 'tb-select', title: t('toolbar.language'), 'aria-label': t('toolbar.language') },
-      el('option', { value: 'en' }, 'EN'),
-      el('option', { value: 'ru' }, 'RU'),
+      // Native names: the switcher is usable even if the current language is
+      // not the one the user reads.
+      ...LOCALES.map((locale) => el('option', { value: locale }, LOCALE_NAMES[locale])),
     );
     localeSelect.value = this.settings.locale;
     localeSelect.addEventListener('change', () => {
-      this.changeLocale(localeSelect.value === 'ru' ? 'ru' : 'en');
+      if (isLocale(localeSelect.value)) this.changeLocale(localeSelect.value);
     });
 
     const themeButton = addButton('theme', 'moon', 'toolbar.darkTheme', () => this.toggleTheme());

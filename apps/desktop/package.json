@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "shot": "node scripts/screenshot.mjs",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "check:locales": "node scripts/check-locales.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.5"

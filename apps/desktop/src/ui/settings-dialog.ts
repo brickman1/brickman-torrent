@@ -9,7 +9,7 @@ import {
   withRecentFolder,
   type AppSettings,
 } from '../core/types';
-import { t } from '../i18n';
+import { LOCALES, LOCALE_NAMES, isLocale, t } from '../i18n';
 import { el } from './dom';
 import { buildFolderField } from './folder-field';
 import { buildLinksSection } from './links-section';
@@ -114,8 +114,9 @@ export function buildSettingsForm(
   const language = el(
     'select',
     { class: 'text-input select-input' },
-    selectOption('en', 'English'),
-    selectOption('ru', 'Русский'),
+    // Each language is listed in its own script, so the picker works when the
+    // current UI language is not the one the user wants.
+    ...LOCALES.map((locale) => selectOption(locale, LOCALE_NAMES[locale])),
   );
   language.value = settings.locale;
 
@@ -226,7 +227,7 @@ export function buildSettingsForm(
       : settings.recentFolders;
     return {
       theme: theme.value === 'dark' ? 'dark' : 'light',
-      locale: language.value === 'ru' ? 'ru' : 'en',
+      locale: isLocale(language.value) ? language.value : 'en',
       checkUpdatesOnStartup: checkUpdates.checked,
       maxActive: Math.min(50, Math.max(1, Number(maxActive.value) || settings.maxActive)),
       downLimit: Math.max(0, Number(downLimit.value) || 0),

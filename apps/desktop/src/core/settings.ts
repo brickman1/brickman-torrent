@@ -1,3 +1,4 @@
+import { isLocale } from '../i18n';
 import {
   DEFAULT_SETTINGS,
   RECENT_FOLDERS_LIMIT,
@@ -35,7 +36,7 @@ export function loadSettings(): AppSettings {
       ...DEFAULT_SETTINGS,
       ...parsed,
       theme: parsed.theme === 'dark' ? 'dark' : 'light',
-      locale: parsed.locale === 'ru' ? 'ru' : 'en',
+      locale: isLocale(parsed.locale) ? parsed.locale : 'en',
       checkUpdatesOnStartup: parsed.checkUpdatesOnStartup !== false,
       downloadDir: typeof parsed.downloadDir === 'string' ? parsed.downloadDir : '',
       createSubfolderDefault: parsed.createSubfolderDefault !== false,

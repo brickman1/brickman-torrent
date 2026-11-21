@@ -273,15 +273,95 @@ const availableText = await statusText();
 check('status bar shows available update', availableText.includes('Update 0.2.0 available'), availableText);
 
 // --- locale switch ------------------------------------------------------
-await page.locator('.tb-select').selectOption('ru');
+const NATIVE_NAMES = [
+  'English',
+  'Русский',
+  'Español',
+  'Português (Brasil)',
+  'Deutsch',
+  'Français',
+  'Italiano',
+  'Türkçe',
+  'Polski',
+  '简体中文',
+];
+const localeOptions = await page.$$eval('.tb-select option', (nodes) =>
+  nodes.map((node) => node.textContent?.trim() ?? ''),
+);
+check(
+  'the switcher lists all 10 languages in their own names',
+  localeOptions.length === NATIVE_NAMES.length &&
+    NATIVE_NAMES.every((name) => localeOptions.includes(name)),
+  localeOptions.join(' | '),
+);
+
+// Icon buttons keep their place when the select grows: only the select's own
+// left edge may move, never the buttons.
+const toolbarButtonLefts = () =>
+  page.$$eval('.tb-btn', (nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().left)));
+const toolbarFits = () =>
+  page.evaluate(() => {
+    const bar = document.querySelector('.toolbar');
+    return Boolean(bar) && bar.scrollWidth <= bar.clientWidth + 1;
+  });
+const activeStatusText = () =>
+  page.locator('.status.st-downloading').first().innerText().catch(() => '');
+const storedLocale = () =>
+  page.evaluate(() => {
+    const raw = localStorage.getItem('brickman-torrent.settings.v1');
+    return raw ? JSON.parse(raw).locale : null;
+  });
+
+const enButtonLefts = await toolbarButtonLefts();
+const enStatus = await activeStatusText();
+await page.locator('.tb-select').selectOption('de');
 await page.waitForTimeout(300);
-const ruSidebar = await page.locator('.side-item').first().innerText();
-check('RU locale switches sidebar', ruSidebar.includes('Все'), ruSidebar.replace(/\s+/g, ' '));
-const ruHeader = await page.locator('th.col-name').innerText();
-// The header row is uppercased by CSS, and `innerText` reports it that way.
-check('RU locale switches table header', /имя/i.test(ruHeader), ruHeader);
+const deSidebar = (await page.locator('.side-item').first().innerText()).replace(/\s+/g, ' ');
+check('DE locale switches the sidebar', deSidebar.includes('Alle'), deSidebar);
+const deStatus = await activeStatusText();
+check('DE locale switches the status column', deStatus === 'Lädt', deStatus);
+check(
+  'DE locale rebuilds the toolbar labels',
+  (await page.locator('.tb-btn[aria-label="Einstellungen"]').count()) === 1,
+);
+check('DE choice is persisted in the settings', (await storedLocale()) === 'de', String(await storedLocale()));
+check(
+  'the toolbar buttons do not move on German strings',
+  JSON.stringify(await toolbarButtonLefts()) === JSON.stringify(enButtonLefts),
+  JSON.stringify(await toolbarButtonLefts()),
+);
+check('the toolbar does not overflow on German strings', await toolbarFits());
+
 await page.locator('.tb-select').selectOption('en');
 await page.waitForTimeout(300);
+const backSidebar = (await page.locator('.side-item').first().innerText()).replace(/\s+/g, ' ');
+check('switching back to EN restores the sidebar', backSidebar.includes('All'), backSidebar);
+check('switching back to EN restores the status column', (await activeStatusText()) === enStatus, await activeStatusText());
+check('EN choice is persisted in the settings', (await storedLocale()) === 'en', String(await storedLocale()));
+check(
+  'the toolbar buttons are back where they were',
+  JSON.stringify(await toolbarButtonLefts()) === JSON.stringify(enButtonLefts),
+);
+
+// A non-Latin locale: the page language changes and the CJK font stack is in
+// place, so Han characters are not left to a fallback that may not exist.
+await page.locator('.tb-select').selectOption('zh-CN');
+await page.waitForTimeout(300);
+check(
+  'zh-CN sets the document language',
+  (await page.evaluate(() => document.documentElement.lang)) === 'zh-CN',
+);
+const zhSidebar = (await page.locator('.side-item').first().innerText()).replace(/\s+/g, ' ');
+check('zh-CN locale switches the sidebar', zhSidebar.includes('全部'), zhSidebar);
+const bodyFont = await page.evaluate(() => getComputedStyle(document.body).fontFamily);
+check(
+  'the font stack carries a CJK fallback',
+  /Microsoft YaHei/.test(bodyFont) && /PingFang SC/.test(bodyFont) && /Noto Sans CJK SC/.test(bodyFont),
+  bodyFont,
+);
+await page.locator('.tb-select').selectOption('en');
+await page.waitForTimeout(300);
+check('EN is back after zh-CN', (await activeStatusText()) === enStatus, await activeStatusText());
 
 // --- add dialog: folder, recent folders, validation ---------------------
 const FOLDER = 'C:\\Temp\\Моя папка';

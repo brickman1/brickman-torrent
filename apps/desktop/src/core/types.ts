@@ -1,6 +1,9 @@
 // Shared UI/domain types. The shape mirrors what a real engine adapter is
 // expected to return over Tauri commands (see README "Integration contract").
 
+// Type-only import: keeps this module free of DOM code, erased at compile time.
+import type { Locale } from '../i18n';
+
 export type TorrentStatus =
   | 'downloading'
   | 'seeding'
@@ -148,7 +151,8 @@ export function normalizePowerDelay(value: unknown): number {
 
 export interface AppSettings {
   theme: 'light' | 'dark';
-  locale: 'en' | 'ru';
+  /** UI language; `en` is the source language. */
+  locale: Locale;
   checkUpdatesOnStartup: boolean;
   maxActive: number;
   downLimit: number; // kB/s, 0 = unlimited

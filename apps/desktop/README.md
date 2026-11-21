@@ -16,8 +16,8 @@ All sample torrents are legal/public content (see "Sample content" below).
 - Vite 8 + TypeScript (strict), one CSS file with theme variables
 - No React/Svelte, no icon fonts, no CDN, no network calls, no telemetry
 - Dense 24 px rows, classic light theme by default, dark theme toggle
-- UI strings are English; `src/locales/ru.json` + micro-resolver `src/i18n.ts`
-  (language switcher in the toolbar)
+- UI strings live in `src/locales/*.json` with the micro-resolver `src/i18n.ts`
+  (10 languages, switcher in the toolbar and in Settings → Appearance)
 
 ```
 src/
@@ -35,10 +35,12 @@ src/
     details.ts            General / Files / Trackers / Peers
     settings-dialog.ts    queue, bandwidth, updates, appearance
     menu.ts, modal.ts, dom.ts, icons.ts
-  locales/en.json, ru.json
+  locales/                  en.json, ru.json, es.json, pt-BR.json, de.json,
+                            fr.json, it.json, tr.json, pl.json, zh-CN.json
 src-tauri/                Cargo.toml, tauri.conf.json, capabilities, icons
 scripts/screenshot.mjs    docs/mockup*.png via local Edge/Chrome (playwright-core)
-scripts/smoke.mjs         22 interaction checks in headless Edge
+scripts/smoke.mjs         73 interaction checks in headless Edge
+scripts/check-locales.mjs every dictionary against en.json (keys + placeholders)
 ```
 
 ## Run
@@ -57,6 +59,7 @@ Checks:
 npm run build
 cd src-tauri && cargo check
 npm run smoke        # with `npm run dev` running in another terminal
+npm run check:locales  # every dictionary vs en.json
 npm run shot         # regenerates docs/mockup*.png
 ```
 
@@ -67,6 +70,27 @@ source, regenerate with `npx tauri icon assets/icon.png`.
 If the Tauri commands are still missing, `resolveProvider()` in `src/main.ts`
 falls back to the mock provider after a failed `list_torrents`, so
 `npm run tauri dev` always shows a UI instead of an empty window.
+
+## Localization
+
+The UI ships in 10 languages: English, Русский, Español, Português (Brasil),
+Deutsch, Français, Italiano, Türkçe, Polski and 简体中文. The switcher in the
+toolbar and in Settings → Appearance lists each language in its own script; the
+choice is saved with the other settings and applies at once.
+
+- **English is the source language.** `src/locales/en.json` defines the key set,
+  and every other file mirrors it key for key.
+- The other nine dictionaries are machine translations with the torrent terms
+  matched to the common clients (seeds/peers, semillas/pares, Sementes/Pares,
+  Sources/Pairs, Seeds/Peers, Seedy/Peery, 种子/用户). No native speaker has
+  reviewed them, so wording may still be off in places.
+- A key missing from a dictionary falls back to English. The dev server logs one
+  warning per missing key; the release build stays silent.
+- To fix a string, edit that one JSON file: keys never change and
+  `{placeholders}` must stay as they are. Then run `npm run check:locales`, which
+  compares every dictionary with `en.json` (missing and extra keys, placeholders).
+- Chinese relies on the CJK fallbacks in the font stack (`Microsoft YaHei`,
+  `PingFang SC`, `Noto Sans CJK SC`).
 
 ## What is mocked
 

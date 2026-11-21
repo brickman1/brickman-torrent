@@ -1,116 +1,60 @@
 # Brickman Torrent
 
-A small, open source BitTorrent client: a Rust core on top of
-[librqbit](https://github.com/ikatson/rqbit), a command line front-end and a
-Tauri desktop application. The UI is a plain-DOM TypeScript app, so it also runs
-in a normal browser against a mock provider.
+A small BitTorrent client for Windows. No ads, no toolbars, no telemetry.
+
+The engine is [librqbit](https://github.com/ikatson/rqbit), the shell is Tauri 2,
+the UI is plain TypeScript. MIT licensed.
 
 ![Brickman Torrent](apps/desktop/docs/mockup.png)
 
-## What it does
+## Download
 
-- `.torrent` files and magnet links (BEP-9 metadata exchange),
-- DHT, HTTP/UDP trackers, PEX, local service discovery,
-- fastresume: progress survives restarts,
-- a queue that is a list: the order of the rows is the priority, and
-  "maximum active downloads" (default 1) decides how many run at once,
-- drag and drop of rows to reorder the queue, plus move up / down / to a
-  position,
-- resizable table columns: drag a header divider, double-click it to fit the
-  column to its content, and the widths are remembered,
-- global up/down limits,
-- per-file selection (download / don't download),
-- torrent file paths are validated before anything is written, so a hostile
-  torrent cannot write outside the download folder.
+Grab the installer from the [Releases](../../releases) page:
 
-## Repository layout
+- `Brickman Torrent_x64-setup.exe` — normal installer
+- `Brickman Torrent_x64_en-US.msi` — the same thing as an MSI
+
+Windows 10 or 11, 64-bit. The app is not code-signed yet, so SmartScreen will
+warn on the first run: *More info → Run anyway*.
+
+## What it can do
+
+- `.torrent` files and magnet links; DHT, HTTP/UDP trackers, PEX, local peer
+  discovery
+- downloads survive a restart — no re-check of finished files
+- **the queue is the list**: the top row downloads and takes the whole
+  bandwidth, the rest wait. Drag a row to move it up or down; there are also
+  "Move up", "Move down" and "Move to position…" in the right-click menu
+- "maximum active downloads" (default 1) decides how many run at once; a torrent
+  that reaches 100 % leaves the queue, so the next one starts
+- pick the download folder when you add a torrent, with the last five folders at
+  hand; the folder is checked for write access before the download starts
+- choose which files inside a torrent to download
+- upload/download limits
+- shut down, sleep or hibernate when all downloads finish — with a countdown you
+  can cancel
+- opens `magnet:` links and `.torrent` files (single instance, the link goes to
+  the window that is already running)
+- resizable columns, light and dark theme, 10 languages
+
+There is no tray icon yet and no per-file priority levels — download or skip
+only. See [SPEC.md](SPEC.md) for the full list of what is and is not there.
+
+## Install
+
+1. Run the installer.
+2. Add a torrent: *Add file* for a `.torrent`, *Add link* for a magnet, or just
+   click a magnet link in your browser after enabling it in
+   *Settings → Links*.
+3. Settings are stored per user; torrents and their progress live in
+   `%APPDATA%\BrickmanTorrent\`.
+
+## Command line
+
+`brickman-torrent.exe` does one action and exits:
 
 ```
-Cargo.toml                  workspace: crates/core, crates/cli, apps/desktop/src-tauri
-Cargo.lock                  one lock file for the whole workspace
-crates/core/                brickman-core: engine wrapper, queue, path safety
-crates/cli/                 brickman-cli: the `brickman-torrent` command line tool
-apps/desktop/               Tauri 2 + Vite UI (TypeScript, plain DOM)
-  src/                      UI, providers (mock and Tauri), locales
-  src-tauri/                Tauri shell; exposes the core to the webview
-  scripts/                  smoke test and screenshot helper
-  docs/                     mockup screenshots
-SPEC.md                     scope: what is implemented and what remains
-```
-
-## Build
-
-Requires Rust 1.85 or newer (MSVC toolchain on Windows) and Node.js 20+.
-
-**The desktop crate embeds the frontend at compile time** (`generate_context!`
-reads `apps/desktop/dist`), so the frontend must be built *before* cargo:
-
-```sh
-npm --prefix apps/desktop ci
-npm --prefix apps/desktop run build     # writes apps/desktop/dist
-
-cargo build --release                   # core + CLI + desktop app
-```
-
-Binaries:
-
-- `target/release/brickman-torrent.exe` — the CLI,
-- `target/release/brickman-desktop.exe` — the desktop app.
-
-Without `apps/desktop/dist` the workspace does not compile; the CLI alone can be
-built with `cargo build --release -p brickman-cli` before the UI exists.
-
-Checks used in CI-less development:
-
-```sh
-cargo test
-cargo clippy --all-targets -- -D warnings
-npm --prefix apps/desktop run smoke     # needs `npm --prefix apps/desktop run dev`
-```
-
-## Desktop application
-
-```sh
-npm --prefix apps/desktop run dev        # browser, mock data (no Rust needed)
-npm --prefix apps/desktop run tauri dev  # real window, real engine
-npm --prefix apps/desktop run tauri build  # MSI + NSIS installers in target/release/bundle
-```
-
-The app talks to the core through Tauri commands (`apps/desktop/src-tauri/src/lib.rs`):
-`list_torrents`, `get_session_stats`, `add_torrent_file`, `add_magnet`,
-`resume_torrents`, `pause_torrents`, `stop_torrents`, `remove_torrents`,
-`move_torrent`, `move_torrent_by`, `set_max_active`, `set_limits`, `list_files`,
-`set_file_priority`, `list_trackers`, `list_peers`, `check_for_updates`,
-`open_external`, plus `engine_init` / `set_download_dir` used at startup.
-
-- The "#" column is the queue position. Drag a row (or its grip in the first
-  column) up or down to reorder the queue; a line shows where it will land.
-  The same is in the context menu: "Move to top", "Move up", "Move down" and
-  "Move to position…".
-- Dragging is only allowed while the table is sorted by "#": sorting by name,
-  size or another column is a temporary view and does not rewrite the queue
-  (the app says "Sort by # to change the queue").
-
-- The engine is created once per run; state lives in
-  `%APPDATA%\BrickmanTorrent\` (`state.json` + the engine's `session\` folder),
-  the download folder comes from the UI settings (empty = `Downloads`).
-- Every command runs the synchronous core on a blocking thread: the core owns
-  its own tokio runtime, so it must never be called from an async task.
-- The UI polls `list_torrents` + `get_session_stats` once per second.
-- `brickman-desktop.exe path\to\file.torrent` adds that torrent on startup.
-
-Screenshots of the layout: `apps/desktop/docs/mockup.png` (torrent list),
-`mockup-files.png` (files tab), `mockup-dark.png` (dark theme). They are
-generated by `npm --prefix apps/desktop run shot`.
-
-The UI is available in 10 languages (English is the source); the switcher is in
-the toolbar and in Settings. See `apps/desktop/README.md` → Localization for how
-to send a translation fix.
-
-## Usage (CLI)
-
-```sh
-brickman-torrent add <path/to/file.torrent | magnet:?...> [--dir DIR] [--wait SECS]
+brickman-torrent add <file.torrent | magnet:?...> [--dir DIR] [--wait SECS]
 brickman-torrent list
 brickman-torrent pause <id|all>
 brickman-torrent resume <id|all>
@@ -118,46 +62,63 @@ brickman-torrent rm <id> [--files]
 brickman-torrent move <id> <position>
 brickman-torrent up <id>
 brickman-torrent down <id>
-brickman-torrent priority <id> <position>
 brickman-torrent limits [--down <KiB/s>] [--up <KiB/s>]
 brickman-torrent max-active <n>
 brickman-torrent run [--seconds SECS]
 ```
 
-Every command performs one action and exits. The download engine runs only
-while a command is running: `add --wait N` and `run` keep it in the foreground
-for at most `N` seconds (`run` without `--seconds` stops on Ctrl+C). State lives
-in `%APPDATA%\BrickmanTorrent\` (`state.json` for the queue, `session\` for the
-engine's torrent list and fastresume bitfields); override it with `TC_DATA_DIR`,
-and the default download folder with `TC_DOWNLOAD_DIR`.
+`add --wait N` and `run` keep the engine in the foreground for N seconds; the
+rest only work while a command is running. State goes to
+`%APPDATA%\BrickmanTorrent\` — override with `TC_DATA_DIR` and
+`TC_DOWNLOAD_DIR`.
 
-The queue is the order of the list: position `1` downloads first and takes the
-whole bandwidth, the rest wait as `queued` (distinct from a pause requested by
-the user). `move` and its alias `priority` put a torrent at a 1-based position
-(`1` = first), `up` / `down` shift it by one; the same works by dragging rows in
-the desktop app. `max_active` (default `1`, `0` = unlimited) is how many
-unfinished torrents may download at once. A torrent that reaches 100 % leaves
-the download queue at once and may keep seeding, so the next one starts.
+## Build from source
+
+Rust 1.85+ (MSVC toolchain on Windows) and Node.js 20+.
+
+The desktop crate embeds the frontend at compile time, so the frontend goes
+first:
+
+```sh
+npm --prefix apps/desktop ci
+npm --prefix apps/desktop run build      # writes apps/desktop/dist
+
+cargo build --release
+npm --prefix apps/desktop run tauri build  # installers in target/release/bundle
+```
+
+Checks:
+
+```sh
+cargo test
+cargo clippy --all-targets -- -D warnings
+npm --prefix apps/desktop run dev          # UI in a browser on mock data
+npm --prefix apps/desktop run smoke        # UI smoke test against the dev server
+```
+
+Layout:
+
+```
+crates/core/          brickman-core: engine wrapper, queue, path checks
+crates/cli/           brickman-cli: the command line tool
+apps/desktop/         Tauri app: src-tauri (Rust shell) + src (TypeScript UI)
+```
 
 ## Acceptable use
 
-Brickman Torrent is a protocol client. It contains no search, no content
-catalogue, no index and no built-in tracker lists — it only downloads the
-torrents you add yourself.
+This is a protocol client. It contains no search, no catalogue, no index and no
+tracker lists — it downloads only what you add yourself.
 
-You are responsible for the content you download and share. The BitTorrent
-protocol itself is legal and is commonly used for Linux distributions, open
-data sets and your own files; distributing copyrighted works without permission
-is not. Check the law of your jurisdiction before downloading.
+You are responsible for what you download and share. BitTorrent itself is legal
+and is used for Linux distributions, open data and your own files; distributing
+copyrighted works without permission is not.
 
 ## No telemetry
 
-The client sends nothing about you or your usage. There is no analytics, no
-crash reporting and no account. Network traffic consists of BitTorrent protocol
-traffic (peers, DHT, trackers you selected) and a single update check against
-the GitHub release feed, which can be switched off in the settings. Nothing else
-phones home.
+No analytics, no crash reports, no accounts. The only requests are BitTorrent
+traffic and one update check against the GitHub releases feed, which can be
+turned off in the settings.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

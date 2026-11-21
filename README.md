@@ -40,6 +40,11 @@ warn on the first run: *More info → Run anyway*.
 There is no tray icon yet and no per-file priority levels — download or skip
 only. See [SPEC.md](SPEC.md) for the full list of what is and is not there.
 
+If your network routes traffic by port (for example a home gateway that sends
+torrent traffic around a proxy), switch **uTP** off in *Settings → Connections*:
+the client then speaks TCP only, and a single "TCP to high ports goes direct"
+rule covers all of it.
+
 ## Install
 
 1. Run the installer.

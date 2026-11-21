@@ -153,6 +153,14 @@ and `run [--seconds N]`. `list` shows the queue in order; `#` is the engine id a
   the downloaded files itself (rename, falling back to copy+remove across
   volumes) and re-adds the same bytes with the same engine id and the previous
   file selection. Progress and queue position survive.
+- **No bind-to-IP for outgoing traffic.** librqbit can bind the *listening*
+  socket to an address (`ListenerOptions::listen_addr`) and supports
+  `bind_device_name`, but that is `SO_BINDTODEVICE`/`IP_BOUND_IF` and the Windows
+  build returns `BindDeviceNotSupported`. Outbound TCP, DHT and tracker sockets
+  are created by the engine and take their source address from the OS routing
+  table, so "make the client leave from a second IP" is not something the app
+  can do on Windows. A practical workaround for split routing: disable uTP, the
+  client becomes TCP-only, and a single port-based rule on the gateway covers it.
 
 ## Remaining (not implemented)
 

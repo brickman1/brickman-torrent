@@ -254,7 +254,7 @@ await applySettings();
 await page.locator('.tb-btn[aria-label="Check for updates"]').click();
 await page.waitForTimeout(1400);
 const upToDateText = await statusText();
-check('manual check reports up to date', upToDateText.includes('latest version (0.1.1)'), upToDateText);
+check('manual check reports up to date', upToDateText.includes('latest version (0.2.0)'), upToDateText);
 
 await openSettings();
 await toggleMockUpdate(true);
@@ -940,3 +940,4 @@ const failed = results.filter((item) => !item.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 for (const item of results) console.log(`${item.ok ? 'ok  ' : 'FAIL'} ${item.name}`);
 if (failed.length > 0) process.exitCode = 1;
+

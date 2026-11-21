@@ -11,13 +11,12 @@
 [advisories]
 # Default RustSec advisory database.
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# Empty on purpose: a real advisory must fail the check so somebody looks at it.
-# Known and currently unfixable from here (2026-11-22): RUSTSEC-2026-0293 in
-# ringbuf 0.4.8 (double free when a Drop panics), pulled in by librqbit-utp
-# 0.7.0, which pins ringbuf ^0.4.7; the fix landed in ringbuf 0.5.2, so this
-# clears when librqbit bumps its uTP crate. To silence it temporarily, add
-# "RUSTSEC-2026-0293" below and delete the entry once librqbit-utp moves on.
-ignore = []
+# RUSTSEC-2026-0293: double free in ringbuf 0.4.8 when a Drop panics, pulled in
+# by librqbit-utp 0.7.0 (pins ringbuf ^0.4.7, fixed in 0.5.2). Unfixable here
+# until librqbit bumps its uTP crate — ignored so CI stays green; the weekly
+# cargo-deny cron still surfaces *new* advisories. Remove this line once
+# librqbit-utp moves past ringbuf 0.4.
+ignore = ["RUSTSEC-2026-0293"]
 
 [licenses]
 # Licences we accept for code we redistribute in the bundles.

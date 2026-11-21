@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Brickman Torrent
+GenericName=BitTorrent Client
+Comment=Download torrents and magnet links
+Exec=brickman-desktop %U
+TryExec=brickman-desktop
+Icon=brickman-torrent
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=torrent;bittorrent;magnet;p2p;download;
+MimeType=x-scheme-handler/magnet;application/x-bittorrent;
+StartupNotify=true

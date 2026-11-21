@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+
+PackageIdentifier: Brickman.brickman-torrent
+PackageVersion: 0.1.1
+InstallerType: nullsoft
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+UpgradeBehavior: install
+ReleaseDate: '2026-11-21'
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/brickman1/brickman-torrent/releases/download/v0.1.1/Brickman.Torrent_0.1.1_x64-setup.exe
+    InstallerSha256: 6CF79A645606551364E5D4B5AD63F7C39EB424B9DAB6BC9E3F8F9AB4A54C45BA
+ManifestType: installer
+ManifestVersion: 1.12.0

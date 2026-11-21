@@ -17,6 +17,15 @@ Grab the installer from the [Releases](../../releases) page:
 Windows 10 or 11, 64-bit. The app is not code-signed yet, so SmartScreen will
 warn on the first run: *More info → Run anyway*.
 
+### Install (winget)
+
+```sh
+winget install Brickman.brickman-torrent
+```
+
+The manifest is ready in [packaging/winget](packaging/winget) but has not been
+merged into the winget-pkgs repository yet, so the command works once it is.
+
 ## What it can do
 
 - `.torrent` files and magnet links; DHT, HTTP/UDP trackers, PEX, local peer
@@ -53,6 +62,33 @@ rule covers all of it.
    *Settings → Links*.
 3. Settings are stored per user; torrents and their progress live in
    `%APPDATA%\BrickmanTorrent\`.
+
+## Linux
+
+The engine and the CLI build on Linux as they are; the GUI is Tauri 2 and needs
+WebKitGTK. On Debian/Ubuntu:
+
+```sh
+sudo apt install build-essential curl wget file libssl-dev libgtk-3-dev \
+  libwebkit2gtk-4.1-dev librsvg2-dev
+
+npm --prefix apps/desktop ci
+npm --prefix apps/desktop run build
+cargo build --release    # target/release/brickman-desktop and brickman-torrent
+```
+
+Then install the desktop entry and make it the `magnet:` handler:
+
+```sh
+desktop-file-install --dir="$HOME/.local/share/applications" \
+  packaging/linux/brickman-torrent.desktop
+xdg-mime default brickman-torrent.desktop x-scheme-handler/magnet
+xdg-mime default brickman-torrent.desktop application/x-bittorrent
+update-desktop-database ~/.local/share/applications
+```
+
+See [packaging/linux](packaging/linux) for details, including the icon that the
+desktop entry expects. AppImage and deb bundles are not built yet.
 
 ## Command line
 

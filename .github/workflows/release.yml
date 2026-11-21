@@ -70,11 +70,9 @@ jobs:
           ver="${GITHUB_REF_NAME#v}"
           mkdir -p release-artifacts
 
-          # Tauri writes into the workspace target dir, but keep the old
-          # per-crate location as a fallback in case the layout changes.
-          search_dirs="target apps/desktop/src-tauri/target"
-          setup="$(find $search_dirs -type f -name "Brickman Torrent_${ver}_x64-setup.exe" 2>/dev/null | head -n 1)"
-          msi="$(find $search_dirs -type f -name "Brickman Torrent_${ver}_x64_en-US.msi" 2>/dev/null | head -n 1)"
+          # Tauri writes bundles into the workspace target dir.
+          setup="$(find target/release/bundle -type f -name "Brickman Torrent_${ver}_x64-setup.exe" 2>/dev/null | head -n 1 || true)"
+          msi="$(find target/release/bundle -type f -name "Brickman Torrent_${ver}_x64_en-US.msi" 2>/dev/null | head -n 1 || true)"
 
           if [ -z "$setup" ] || [ -z "$msi" ]; then
             echo "::error::expected bundles for $ver not found (setup='$setup' msi='$msi')"

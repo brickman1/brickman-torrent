@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows bundles
+    # Only Windows is built for now; that is the platform the artifacts are
+    # named for below (x64 NSIS setup + WiX MSI).
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm --prefix apps/desktop ci
+
+      - name: Build frontend
+        run: npm --prefix apps/desktop run build
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Artifact names carry the Tauri config version, so a tag that disagrees
+      # with it would publish a confusingly named release.
+      - name: Check tag matches app version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          conf="$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")"
+          cargo_version="$(node -p "require('./apps/desktop/package.json').version")"
+          echo "tag=$tag tauri.conf=$conf package.json=$cargo_version"
+          if [ "$tag" != "$conf" ] || [ "$tag" != "$cargo_version" ]; then
+            echo "::error::tag v$tag does not match tauri.conf.json ($conf) / package.json ($cargo_version)"
+            exit 1
+          fi
+
+      - name: cargo build --release
+        run: cargo build --release
+
+      - name: Build Tauri bundles
+        run: npm --prefix apps/desktop run tauri build
+
+      - name: Collect bundles and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          mkdir -p release-artifacts
+
+          # Tauri writes into the workspace target dir, but keep the old
+          # per-crate location as a fallback in case the layout changes.
+          search_dirs="target apps/desktop/src-tauri/target"
+          setup="$(find $search_dirs -type f -name "Brickman Torrent_${ver}_x64-setup.exe" 2>/dev/null | head -n 1)"
+          msi="$(find $search_dirs -type f -name "Brickman Torrent_${ver}_x64_en-US.msi" 2>/dev/null | head -n 1)"
+
+          if [ -z "$setup" ] || [ -z "$msi" ]; then
+            echo "::error::expected bundles for $ver not found (setup='$setup' msi='$msi')"
+            exit 1
+          fi
+
+          cp "$setup" "$msi" release-artifacts/
+          ( cd release-artifacts && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt )
+
+      # TODO(release-signing): builds are unsigned for now. Before the first
+      # public release, wire up code signing here — SignPath.io (free for OSS)
+      # or Sigstore/cosign for the artifacts plus provenance — and verify the
+      # signature before uploading. Do not add signing secrets to this workflow
+      # until the owner has created them.
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-artifacts/Brickman Torrent_*_x64-setup.exe
+            release-artifacts/Brickman Torrent_*_x64_en-US.msi
+            release-artifacts/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+          generate_release_notes: true

@@ -1,0 +1,24 @@
+name: cargo-deny
+
+on:
+  push:
+  pull_request:
+  # Advisories land independently of our commits; re-check weekly.
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    name: cargo deny check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cargo deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          # Licences + RustSec advisories + bans, per deny.toml.

@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    name: Build, test, clippy
+    # Windows keeps CI identical to the release target: the Tauri app needs
+    # WebView2, and the bundler only produces the artifacts we ship there.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      # Frontend first: the Tauri crate embeds apps/desktop/dist at compile time.
+      - name: Install frontend dependencies
+        run: npm --prefix apps/desktop ci
+
+      - name: Build frontend
+        run: npm --prefix apps/desktop run build
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build
+        run: cargo build
+
+      - name: cargo test
+        run: cargo test
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  # The repo is not rustfmt-clean yet, so `cargo fmt --check` is intentionally
+  # not gated here; add it once the tree is formatted.
+  locales:
+    name: Locale dictionaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # scripts/check-locales.mjs uses Node built-ins only, no npm install needed.
+      - name: Check locale completeness
+        run: npm --prefix apps/desktop run check:locales

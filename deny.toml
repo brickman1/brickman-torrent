@@ -1,0 +1,47 @@
+# cargo-deny configuration — https://embarkstudios.github.io/cargo-deny/
+#
+# Local run:  cargo deny check
+# CI:         .github/workflows/cargo-deny.yml
+#
+# Scope is deliberately narrow: licence policy and RustSec advisories. The
+# dependency tree (librqbit, tauri, ring, ...) legitimately carries duplicate
+# crate versions, so `bans.multiple-versions` is not fatal — it is reported in
+# the log and cleaned up over time instead of blocking releases.
+
+[advisories]
+# Default RustSec advisory database.
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Empty on purpose: a real advisory must fail the check so somebody looks at it.
+# Known and currently unfixable from here (2026-11-22): RUSTSEC-2026-0293 in
+# ringbuf 0.4.8 (double free when a Drop panics), pulled in by librqbit-utp
+# 0.7.0, which pins ringbuf ^0.4.7; the fix landed in ringbuf 0.5.2, so this
+# clears when librqbit bumps its uTP crate. To silence it temporarily, add
+# "RUSTSEC-2026-0293" below and delete the entry once librqbit-utp moves on.
+ignore = []
+
+[licenses]
+# Licences we accept for code we redistribute in the bundles.
+# - BSL-1.0: clipboard-win / error-code, pulled in by `arboard` (Tauri clipboard).
+# - Unicode-3.0: the icu/idna chain behind `url`; Unicode-DFS-2016 kept for the
+#   older Unicode crates in case resolution moves back to them.
+# - Apache-2.0 WITH LLVM-exception: target-lexicon, via tauri's build deps.
+# - CDLA-Permissive-2.0: webpki-root-certs, the CA bundle behind rustls.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "MPL-2.0",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+# Duplicates are noise here, not a correctness problem: report, never fail.
+multiple-versions = "allow"
+wildcards = "allow"
+deny = []

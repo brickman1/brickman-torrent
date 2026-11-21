@@ -1605,6 +1605,38 @@ body.col-resizing * {
   transform: translate(-50%, 0);
 }
 
+/* ------------------------------------------------------------- drop overlay */
+
+/* Covers the window while a `.torrent` file or a magnet link is dragged over
+   it. It never takes the pointer: the drag belongs to the document. */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.drop-overlay.visible {
+  opacity: 1;
+}
+
+.drop-overlay-box {
+  padding: 14px 22px;
+  border: 1px dashed var(--accent-fill);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: var(--modal-shadow);
+}
+
 /* ------------------------------------------------------------- power banner */
 
 /* Countdown shown before sleep/shutdown: sits just above the status bar and

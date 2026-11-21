@@ -35,6 +35,13 @@ export interface TorrentProvider {
   /** Reads a `.torrent` file without adding it (name and file count). */
   previewFile?(name: string): Promise<TorrentPreview>;
 
+  /**
+   * Writes the bytes of a `.torrent` dropped on the window to a file and
+   * returns its path: a webview hides the real path of a dropped file, and the
+   * rest of the add flow (preview, dialog, engine) works with a path.
+   */
+  stageDroppedTorrent?(name: string, bytes: Uint8Array): Promise<string>;
+
   /** Native pickers; absent when the UI runs in a plain browser. */
   pickTorrentFile?(): Promise<string | null>;
   pickFolder?(): Promise<string | null>;

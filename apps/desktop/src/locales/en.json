@@ -119,6 +119,9 @@
   "add.needFile": "Choose a .torrent file first",
   "add.needMagnet": "Enter a magnet link first",
   "add.badMagnet": "A magnet link must start with magnet:",
+  "drop.hint": "Drop to add",
+  "drop.unsupported": "Only .torrent files and magnet links can be added",
+  "drop.unreadable": "The dropped file could not be read",
 
   "changeFolder.title": "Change download folder",
   "changeFolder.body": "Move “{name}” to another folder?",
@@ -143,6 +146,8 @@
   "dialog.positionTitle": "Queue position",
   "dialog.positionLabel": "Position (1 = first)",
   "dialog.positionHint": "The torrent moves there and the others shift by one.",
+  "dialog.addManyTitle": "Add torrents",
+  "dialog.addManyBody": "Add {count} dropped .torrent files to the list?",
 
   "settings.title": "Settings",
   "settings.apply": "Apply",
@@ -181,6 +186,9 @@
   "settings.powerShutdown": "Shut down",
   "settings.powerForceShutdown": "Force shut down",
   "settings.powerForceWarning": "Force shut down closes all programs without saving data.",
+  "settings.sectionNotifications": "Notifications",
+  "settings.notifyOnComplete": "Notify when a download finishes",
+  "settings.notifyOnCompleteHint": "A system notification with the torrent name and its folder; its “Open folder” button opens the folder.",
   "settings.mockFinish": "Finish all downloads (mock)",
   "settings.sectionBandwidth": "Bandwidth",
   "settings.downLimit": "Download limit, kB/s (0 = unlimited)",
@@ -228,6 +236,9 @@
   "power.banner.hibernate": "The PC will hibernate in {seconds} s",
   "power.cancel": "Cancel",
   "power.dryRun": "dry run: the command is only logged",
+  "notify.title": "Download complete",
+  "notify.completed": "{name} finished downloading",
+  "notify.openFolder": "Open folder",
 
   "toast.noSelection": "Select a torrent first",
   "toast.removed": "Removed {count} torrent(s)",
@@ -237,5 +248,7 @@
   "toast.movedFiles": "Moved {count} file(s) to the new folder",
   "toast.movedFailed": "{count} file(s) stay in the old folder and will be downloaded again",
   "toast.restartRequired": "Restart the app to apply the port and uTP changes",
+  "toast.addedMany": "Added {count} torrent(s)",
+  "toast.failedMany": "{count} torrent(s) could not be added",
   "toast.torrentNotFound": "Torrent file not found: {path}"
 }

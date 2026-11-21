@@ -119,6 +119,9 @@
   "add.needFile": "请先选择 .torrent 文件",
   "add.needMagnet": "请先输入 magnet 链接",
   "add.badMagnet": "Magnet 链接必须以 magnet: 开头",
+  "drop.hint": "Drop to add",
+  "drop.unsupported": "Only .torrent files and magnet links can be added",
+  "drop.unreadable": "The dropped file could not be read",
 
   "changeFolder.title": "更改下载文件夹",
   "changeFolder.body": "将“{name}”移动到其他文件夹？",
@@ -143,6 +146,8 @@
   "dialog.positionTitle": "队列位置",
   "dialog.positionLabel": "位置（1 = 第一位）",
   "dialog.positionHint": "任务将移到该位置，其他任务顺移一位。",
+  "dialog.addManyTitle": "Add torrents",
+  "dialog.addManyBody": "Add {count} dropped .torrent files to the list?",
 
   "settings.title": "设置",
   "settings.apply": "应用",
@@ -181,6 +186,9 @@
   "settings.powerShutdown": "关机",
   "settings.powerForceShutdown": "强制关机",
   "settings.powerForceWarning": "强制关机会关闭所有程序且不保存数据。",
+  "settings.sectionNotifications": "Notifications",
+  "settings.notifyOnComplete": "Notify when a download finishes",
+  "settings.notifyOnCompleteHint": "A system notification with the torrent name and its folder; its “Open folder” button opens the folder.",
   "settings.mockFinish": "完成所有下载（模拟）",
   "settings.sectionBandwidth": "带宽",
   "settings.downLimit": "下载限制，kB/s（0 = 不限）",
@@ -228,6 +236,9 @@
   "power.banner.hibernate": "计算机将在 {seconds} 秒后进入休眠",
   "power.cancel": "取消",
   "power.dryRun": "试运行：命令只写入日志",
+  "notify.title": "Download complete",
+  "notify.completed": "{name} finished downloading",
+  "notify.openFolder": "Open folder",
 
   "toast.noSelection": "请先选择一个任务",
   "toast.removed": "已移除 {count} 个任务",
@@ -237,5 +248,7 @@
   "toast.movedFiles": "已将 {count} 个文件移动到新文件夹",
   "toast.movedFailed": "{count} 个文件仍在原文件夹，将重新下载",
   "toast.restartRequired": "重启应用以应用端口和 uTP 更改",
+  "toast.addedMany": "Added {count} torrent(s)",
+  "toast.failedMany": "{count} torrent(s) could not be added",
   "toast.torrentNotFound": "找不到种子文件：{path}"
 }

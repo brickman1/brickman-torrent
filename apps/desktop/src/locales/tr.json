@@ -119,6 +119,9 @@
   "add.needFile": "Önce bir .torrent dosyası seçin",
   "add.needMagnet": "Önce bir magnet bağlantısı girin",
   "add.badMagnet": "Magnet bağlantısı magnet: ile başlamalı",
+  "drop.hint": "Drop to add",
+  "drop.unsupported": "Only .torrent files and magnet links can be added",
+  "drop.unreadable": "The dropped file could not be read",
 
   "changeFolder.title": "İndirme klasörünü değiştir",
   "changeFolder.body": "“{name}” başka bir klasöre taşınsın mı?",
@@ -143,6 +146,8 @@
   "dialog.positionTitle": "Sıra konumu",
   "dialog.positionLabel": "Konum (1 = ilk)",
   "dialog.positionHint": "Torrent oraya geçer, diğerleri bir sıra kayar.",
+  "dialog.addManyTitle": "Add torrents",
+  "dialog.addManyBody": "Add {count} dropped .torrent files to the list?",
 
   "settings.title": "Ayarlar",
   "settings.apply": "Uygula",
@@ -181,6 +186,9 @@
   "settings.powerShutdown": "Kapat",
   "settings.powerForceShutdown": "Zorla kapat",
   "settings.powerForceWarning": "Zorla kapatma tüm programları verileri kaydetmeden kapatır.",
+  "settings.sectionNotifications": "Notifications",
+  "settings.notifyOnComplete": "Notify when a download finishes",
+  "settings.notifyOnCompleteHint": "A system notification with the torrent name and its folder; its “Open folder” button opens the folder.",
   "settings.mockFinish": "Tüm indirmeleri bitir (sahte)",
   "settings.sectionBandwidth": "Bant genişliği",
   "settings.downLimit": "İndirme sınırı, kB/s (0 = sınırsız)",
@@ -228,6 +236,9 @@
   "power.banner.hibernate": "PC {seconds} sn içinde hazırda beklemeye geçecek",
   "power.cancel": "İptal",
   "power.dryRun": "deneme modu: komut yalnızca günlüğe yazılır",
+  "notify.title": "Download complete",
+  "notify.completed": "{name} finished downloading",
+  "notify.openFolder": "Open folder",
 
   "toast.noSelection": "Önce bir torrent seçin",
   "toast.removed": "{count} torrent kaldırıldı",
@@ -237,5 +248,7 @@
   "toast.movedFiles": "{count} dosya yeni klasöre taşındı",
   "toast.movedFailed": "{count} dosya eski klasörde kaldı ve yeniden indirilecek",
   "toast.restartRequired": "Bağlantı noktası ve uTP değişiklikleri için uygulamayı yeniden başlatın",
+  "toast.addedMany": "Added {count} torrent(s)",
+  "toast.failedMany": "{count} torrent(s) could not be added",
   "toast.torrentNotFound": "Torrent dosyası bulunamadı: {path}"
 }

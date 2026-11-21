@@ -119,6 +119,9 @@
   "add.needFile": "Choisissez d’abord un fichier .torrent",
   "add.needMagnet": "Saisissez d’abord un lien magnet",
   "add.badMagnet": "Un lien magnet doit commencer par magnet:",
+  "drop.hint": "Drop to add",
+  "drop.unsupported": "Only .torrent files and magnet links can be added",
+  "drop.unreadable": "The dropped file could not be read",
 
   "changeFolder.title": "Changer le dossier de téléchargement",
   "changeFolder.body": "Déplacer « {name} » vers un autre dossier ?",
@@ -143,6 +146,8 @@
   "dialog.positionTitle": "Position dans la file",
   "dialog.positionLabel": "Position (1 = première)",
   "dialog.positionHint": "Le torrent s’y place et les autres se décalent d’une position.",
+  "dialog.addManyTitle": "Add torrents",
+  "dialog.addManyBody": "Add {count} dropped .torrent files to the list?",
 
   "settings.title": "Paramètres",
   "settings.apply": "Appliquer",
@@ -181,6 +186,9 @@
   "settings.powerShutdown": "Éteindre",
   "settings.powerForceShutdown": "Forcer l’arrêt",
   "settings.powerForceWarning": "L’arrêt forcé ferme tous les programmes sans enregistrer les données.",
+  "settings.sectionNotifications": "Notifications",
+  "settings.notifyOnComplete": "Notify when a download finishes",
+  "settings.notifyOnCompleteHint": "A system notification with the torrent name and its folder; its “Open folder” button opens the folder.",
   "settings.mockFinish": "Terminer tous les téléchargements (simulation)",
   "settings.sectionBandwidth": "Bande passante",
   "settings.downLimit": "Limite de téléchargement, ko/s (0 = illimité)",
@@ -228,6 +236,9 @@
   "power.banner.hibernate": "Le PC se mettra en hibernation dans {seconds} s",
   "power.cancel": "Annuler",
   "power.dryRun": "mode test : la commande est seulement journalisée",
+  "notify.title": "Download complete",
+  "notify.completed": "{name} finished downloading",
+  "notify.openFolder": "Open folder",
 
   "toast.noSelection": "Sélectionnez d’abord un torrent",
   "toast.removed": "{count} torrent(s) supprimé(s)",
@@ -237,5 +248,7 @@
   "toast.movedFiles": "{count} fichier(s) déplacé(s) vers le nouveau dossier",
   "toast.movedFailed": "{count} fichier(s) restent dans l’ancien dossier et seront retéléchargés",
   "toast.restartRequired": "Redémarrez l'application pour appliquer les changements de port et d'uTP",
+  "toast.addedMany": "Added {count} torrent(s)",
+  "toast.failedMany": "{count} torrent(s) could not be added",
   "toast.torrentNotFound": "Fichier torrent introuvable : {path}"
 }

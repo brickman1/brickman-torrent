@@ -119,6 +119,9 @@
   "add.needFile": "Сначала выберите .torrent файл",
   "add.needMagnet": "Сначала вставьте magnet-ссылку",
   "add.badMagnet": "Magnet-ссылка должна начинаться с magnet:",
+  "drop.hint": "Отпустите, чтобы добавить",
+  "drop.unsupported": "Добавить можно только .torrent файлы и magnet-ссылки",
+  "drop.unreadable": "Не удалось прочитать перетаскиваемый файл",
 
   "changeFolder.title": "Смена папки загрузки",
   "changeFolder.body": "Переместить «{name}» в другую папку?",
@@ -143,6 +146,8 @@
   "dialog.positionTitle": "Позиция в очереди",
   "dialog.positionLabel": "Позиция (1 = первая)",
   "dialog.positionHint": "Торрент встанет на это место, остальные сдвинутся на одну позицию.",
+  "dialog.addManyTitle": "Добавление торрентов",
+  "dialog.addManyBody": "Добавить в список перетащенные .torrent файлы ({count})?",
 
   "settings.title": "Настройки",
   "settings.apply": "Применить",
@@ -181,6 +186,9 @@
   "settings.powerShutdown": "Выключить",
   "settings.powerForceShutdown": "Выключить принудительно",
   "settings.powerForceWarning": "Принудительное выключение закроет все программы без сохранения данных.",
+  "settings.sectionNotifications": "Уведомления",
+  "settings.notifyOnComplete": "Уведомлять о завершении загрузки",
+  "settings.notifyOnCompleteHint": "Системное уведомление с именем торрента и папкой; кнопка «Открыть папку» открывает её.",
   "settings.mockFinish": "Завершить все загрузки (мок)",
   "settings.sectionBandwidth": "Скорость",
   "settings.downLimit": "Лимит приёма, кБ/с (0 = без лимита)",
@@ -228,6 +236,9 @@
   "power.banner.hibernate": "ПК уйдёт в гибернацию через {seconds} с",
   "power.cancel": "Отмена",
   "power.dryRun": "режим проверки: команда только пишется в лог",
+  "notify.title": "Загрузка завершена",
+  "notify.completed": "{name} загружен",
+  "notify.openFolder": "Открыть папку",
 
   "toast.noSelection": "Сначала выберите торрент",
   "toast.removed": "Удалено торрентов: {count}",
@@ -237,5 +248,7 @@
   "toast.movedFiles": "В новую папку перенесено файлов: {count}",
   "toast.movedFailed": "Файлов осталось в старой папке: {count} — они будут скачаны заново",
   "toast.restartRequired": "Перезапустите приложение, чтобы применить порт и uTP",
+  "toast.addedMany": "Добавлено торрентов: {count}",
+  "toast.failedMany": "Не удалось добавить торрентов: {count}",
   "toast.torrentNotFound": "Торрент-файл не найден: {path}"
 }

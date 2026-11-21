@@ -119,6 +119,9 @@
   "add.needFile": "Najpierw wybierz plik .torrent",
   "add.needMagnet": "Najpierw wklej link magnet",
   "add.badMagnet": "Link magnet musi zaczynać się od magnet:",
+  "drop.hint": "Drop to add",
+  "drop.unsupported": "Only .torrent files and magnet links can be added",
+  "drop.unreadable": "The dropped file could not be read",
 
   "changeFolder.title": "Zmiana folderu pobierania",
   "changeFolder.body": "Przenieść „{name}” do innego folderu?",
@@ -143,6 +146,8 @@
   "dialog.positionTitle": "Pozycja w kolejce",
   "dialog.positionLabel": "Pozycja (1 = pierwsza)",
   "dialog.positionHint": "Torrent trafi na to miejsce, a pozostałe przesuną się o jedną pozycję.",
+  "dialog.addManyTitle": "Add torrents",
+  "dialog.addManyBody": "Add {count} dropped .torrent files to the list?",
 
   "settings.title": "Ustawienia",
   "settings.apply": "Zastosuj",
@@ -181,6 +186,9 @@
   "settings.powerShutdown": "Wyłącz",
   "settings.powerForceShutdown": "Wymuś wyłączenie",
   "settings.powerForceWarning": "Wymuszone wyłączenie zamyka wszystkie programy bez zapisywania danych.",
+  "settings.sectionNotifications": "Notifications",
+  "settings.notifyOnComplete": "Notify when a download finishes",
+  "settings.notifyOnCompleteHint": "A system notification with the torrent name and its folder; its “Open folder” button opens the folder.",
   "settings.mockFinish": "Zakończ wszystkie pobierania (test)",
   "settings.sectionBandwidth": "Przepustowość",
   "settings.downLimit": "Limit pobierania, kB/s (0 = bez limitu)",
@@ -228,6 +236,9 @@
   "power.banner.hibernate": "Komputer przejdzie w hibernację za {seconds} s",
   "power.cancel": "Anuluj",
   "power.dryRun": "tryb próbny: polecenie jest tylko zapisywane w logu",
+  "notify.title": "Download complete",
+  "notify.completed": "{name} finished downloading",
+  "notify.openFolder": "Open folder",
 
   "toast.noSelection": "Najpierw wybierz torrent",
   "toast.removed": "Usunięto torrenty: {count}",
@@ -237,5 +248,7 @@
   "toast.movedFiles": "Przeniesiono pliki do nowego folderu: {count}",
   "toast.movedFailed": "Pliki pozostające w starym folderze: {count} — zostaną pobrane ponownie",
   "toast.restartRequired": "Uruchom ponownie aplikację, aby zastosować zmiany portu i uTP",
+  "toast.addedMany": "Added {count} torrent(s)",
+  "toast.failedMany": "{count} torrent(s) could not be added",
   "toast.torrentNotFound": "Nie znaleziono pliku torrent: {path}"
 }

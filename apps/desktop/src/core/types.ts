@@ -215,6 +215,8 @@ export interface AppSettings {
   onDownloadsComplete: PowerAction;
   /** Countdown before the action above, seconds (5–600, default 60). */
   powerDelaySecs: number;
+  /** System notification when a download reaches 100 % (default on). */
+  notifyOnComplete: boolean;
   /**
    * Folders used recently for adding, newest first (at most
    * {@link RECENT_FOLDERS_LIMIT}). The first entry is also "the folder last
@@ -296,6 +298,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   createSubfolderDefault: true,
   onDownloadsComplete: 'nothing',
   powerDelaySecs: POWER_DELAY_DEFAULT,
+  notifyOnComplete: true,
   recentFolders: [],
   columnWidths: {},
   upnpEnabled: true,

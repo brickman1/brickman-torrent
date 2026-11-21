@@ -254,7 +254,7 @@ await applySettings();
 await page.locator('.tb-btn[aria-label="Check for updates"]').click();
 await page.waitForTimeout(1400);
 const upToDateText = await statusText();
-check('manual check reports up to date', upToDateText.includes('latest version (0.1.0)'), upToDateText);
+check('manual check reports up to date', upToDateText.includes('latest version (0.1.1)'), upToDateText);
 
 await openSettings();
 await toggleMockUpdate(true);

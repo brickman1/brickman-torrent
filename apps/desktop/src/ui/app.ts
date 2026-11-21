@@ -1,6 +1,7 @@
 // Application shell and state. Plain TypeScript, no framework.
 
 import { formatSpeed } from '../core/format';
+import { notifyCompletion, setCompletionActionHandler } from '../core/notifications';
 import type { TorrentProvider } from '../core/provider';
 import { applyTheme, saveSettings } from '../core/settings';
 import {
@@ -28,6 +29,7 @@ import { openAddDialog, type AddDialogRequest } from './add-dialog';
 import { openChangeFolderDialog } from './change-folder-dialog';
 import { renderDetails as renderDetailsPanel, type DetailTab } from './details';
 import { clear, el } from './dom';
+import { attachTorrentDrop, type DroppedTorrent } from './drop-target';
 import { errorText } from './folder-field';
 import { icon, type IconName } from './icons';
 import { showContextMenu, type MenuItem } from './menu';
@@ -142,6 +144,13 @@ export class App {
   private pollHandle: number | null = null;
   /** Stops the `link-received` delivery on unload. */
   private unsubscribeLinks: (() => void) | null = null;
+  /** Stops the window-wide drag and drop listeners on unload. */
+  private detachDrop: (() => void) | null = null;
+  /**
+   * Last "100 % reached" answer per torrent, so the "download finished"
+   * notification fires on the transition, not on every poll.
+   */
+  private readonly completedSeen = new Map<string, boolean>();
 
   private updateState: 'idle' | 'checking' | 'available' | 'uptodate' = 'idle';
   private updateInfo: UpdateInfo | null = null;
@@ -177,6 +186,8 @@ export class App {
 
     this.buildShell();
     this.subscribeLinks();
+    this.attachDropTarget();
+    setCompletionActionHandler((id) => this.openTorrentFolder(id));
     await this.refresh();
 
     this.pollHandle = window.setInterval(() => {
@@ -188,6 +199,8 @@ export class App {
     window.addEventListener('beforeunload', () => {
       this.provider.disconnect?.();
       this.unsubscribeLinks?.();
+      this.detachDrop?.();
+      setCompletionActionHandler(null);
       if (this.pollHandle !== null) window.clearInterval(this.pollHandle);
     });
 
@@ -401,6 +414,95 @@ export class App {
     return this.state.sort.key === 'ordinal' && this.state.sort.dir === 1;
   }
 
+  // ------------------------------------------------- window drop of a torrent
+
+  /**
+   * HTML5 drag and drop on the whole window: a `.torrent` file or a magnet link
+   * dropped anywhere opens the add flow. The native Tauri drag/drop event is
+   * not used, it would replace the webview handler the queue rows rely on.
+   */
+  private attachDropTarget(): void {
+    this.detachDrop?.();
+    this.detachDrop = attachTorrentDrop({
+      onTorrents: (dropped) => void this.addDroppedTorrents(dropped),
+      onMagnet: (uri) => void this.showAddDialog({ mode: 'magnet', uri }),
+      onUnsupported: () => this.toast(t('drop.unsupported')),
+    });
+  }
+
+  /**
+   * A single dropped `.torrent` opens the add dialog, several are added after
+   * one confirmation. The webview hides the path of a dropped file, so the
+   * bytes are staged into a real file first and the usual path flow runs.
+   */
+  private async addDroppedTorrents(dropped: DroppedTorrent[]): Promise<void> {
+    const paths: string[] = [];
+    for (const entry of dropped) {
+      if (entry.path) {
+        paths.push(entry.path);
+        continue;
+      }
+      const stage = this.provider.stageDroppedTorrent;
+      if (!entry.bytes || !stage) continue;
+      try {
+        paths.push(await stage.call(this.provider, entry.name, entry.bytes));
+      } catch (err) {
+        this.toast(errorText(err));
+      }
+    }
+
+    if (paths.length === 0) {
+      this.toast(t('drop.unreadable'));
+      return;
+    }
+    if (paths.length === 1) {
+      await this.showAddDialog({ mode: 'file', filePath: paths[0] });
+      return;
+    }
+    this.confirmAddMany(paths);
+  }
+
+  /** Confirmation for a drop of several `.torrent` files at once. */
+  private confirmAddMany(paths: string[]): void {
+    openModal({
+      title: t('dialog.addManyTitle'),
+      width: 440,
+      body: el(
+        'div',
+        { class: 'form' },
+        el('p', { class: 'dialog-text', text: t('dialog.addManyBody', { count: paths.length }) }),
+      ),
+      buttons: [
+        { label: t('common.cancel') },
+        { label: t('common.add'), primary: true, onClick: () => void this.addManyTorrents(paths) },
+      ],
+    });
+  }
+
+  /** Adds the dropped files with the default folder and sub folder rules. */
+  private async addManyTorrents(paths: string[]): Promise<void> {
+    const options: AddTorrentOptions = {
+      createSubfolder: this.settings.createSubfolderDefault,
+    };
+    let added = 0;
+    let failed = 0;
+    for (const path of paths) {
+      try {
+        await this.provider.addFile(path, options);
+        added += 1;
+      } catch (err) {
+        failed += 1;
+        console.warn('[brickman-torrent] cannot add a dropped torrent', path, err);
+      }
+    }
+    if (added > 0) {
+      this.state.filter = { kind: 'all' };
+      this.toast(t('toast.addedMany', { count: added }));
+    }
+    if (failed > 0) this.toast(t('toast.failedMany', { count: failed }));
+    await this.refresh(true);
+  }
+
   // ------------------------------------------------------------- data flow
 
   private async refresh(forceDetails = false): Promise<void> {
@@ -416,6 +518,8 @@ export class App {
       this.state.torrents = torrents;
       this.state.stats = stats;
       this.powerStatus = power;
+
+      this.detectCompleted(torrents);
 
       const known = new Set(torrents.map((torrent) => torrent.id));
       for (const id of [...this.state.selection]) {
@@ -435,6 +539,37 @@ export class App {
     } catch (err) {
       console.error('[brickman-torrent] refresh failed', err);
     }
+  }
+
+  /**
+   * "Download finished" is the transition from below 100 % to 100 % between two
+   * polls: a list restored from the last session stays quiet, and a torrent that
+   * seeds for hours does not notify again on every tick.
+   */
+  private detectCompleted(torrents: Torrent[]): void {
+    for (const torrent of torrents) {
+      const done = torrent.progress >= 0.999;
+      const previous = this.completedSeen.get(torrent.id);
+      this.completedSeen.set(torrent.id, done);
+      if (previous === false && done) this.announceCompletion(torrent);
+    }
+    const known = new Set(torrents.map((torrent) => torrent.id));
+    for (const id of [...this.completedSeen.keys()]) {
+      if (!known.has(id)) this.completedSeen.delete(id);
+    }
+  }
+
+  /** System notification; a toast stands in where there is no native one. */
+  private announceCompletion(torrent: Torrent): void {
+    if (!this.settings.notifyOnComplete) return;
+    const { id, name, savePath } = torrent;
+    void notifyCompletion({ id, name, folder: savePath }).then((native) => {
+      if (native) return;
+      // Mock data in a browser: the console keeps the path, the toast tells
+      // the user. A refused permission ends up here as well.
+      console.info('[brickman-torrent] download finished:', name, savePath);
+      this.toast(t('notify.completed', { name }));
+    });
   }
 
   private async loadDetails(force = false): Promise<void> {
@@ -1245,13 +1380,7 @@ export class App {
       label: t('menu.openFolder'),
       disabled: !open || !torrent,
       title: open ? undefined : t('menu.openFolderUnavailable'),
-      action: torrent
-        ? () => {
-            void open
-              ?.call(this.provider, { id: torrent.id })
-              .catch((err: unknown) => this.toast(errorText(err)));
-          }
-        : undefined,
+      action: torrent ? () => this.openTorrentFolder(torrent.id) : undefined,
     });
 
     const change = this.provider.setTorrentOutputDir;
@@ -1272,6 +1401,15 @@ export class App {
           : undefined,
     });
     return items;
+  }
+
+  /** Opens the folder of a torrent: row menu and the finish notification. */
+  private openTorrentFolder(id: string): void {
+    const open = this.provider.openFolder;
+    if (!open) return;
+    void open
+      .call(this.provider, { id })
+      .catch((err: unknown) => this.toast(errorText(err)));
   }
 
   /** Only a torrent the engine is not running can be moved. */

@@ -58,6 +58,7 @@ export function loadSettings(): AppSettings {
       createSubfolderDefault: parsed.createSubfolderDefault !== false,
       onDownloadsComplete: normalizePowerAction(parsed.onDownloadsComplete),
       powerDelaySecs: normalizePowerDelay(parsed.powerDelaySecs),
+      notifyOnComplete: parsed.notifyOnComplete !== false,
       recentFolders: readRecentFolders(parsed.recentFolders),
       columnWidths: readColumnWidths(parsed.columnWidths),
       upnpEnabled: parsed.upnpEnabled !== false,

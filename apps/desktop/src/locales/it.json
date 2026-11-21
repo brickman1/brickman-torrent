@@ -119,6 +119,9 @@
   "add.needFile": "Scegli prima un file .torrent",
   "add.needMagnet": "Inserisci prima un link magnet",
   "add.badMagnet": "Un link magnet deve iniziare con magnet:",
+  "drop.hint": "Drop to add",
+  "drop.unsupported": "Only .torrent files and magnet links can be added",
+  "drop.unreadable": "The dropped file could not be read",
 
   "changeFolder.title": "Cambia cartella di download",
   "changeFolder.body": "Spostare «{name}» in un’altra cartella?",
@@ -143,6 +146,8 @@
   "dialog.positionTitle": "Posizione in coda",
   "dialog.positionLabel": "Posizione (1 = prima)",
   "dialog.positionHint": "Il torrent va lì e gli altri scalano di una posizione.",
+  "dialog.addManyTitle": "Add torrents",
+  "dialog.addManyBody": "Add {count} dropped .torrent files to the list?",
 
   "settings.title": "Impostazioni",
   "settings.apply": "Applica",
@@ -181,6 +186,9 @@
   "settings.powerShutdown": "Arresta il sistema",
   "settings.powerForceShutdown": "Arresto forzato",
   "settings.powerForceWarning": "L’arresto forzato chiude tutti i programmi senza salvare i dati.",
+  "settings.sectionNotifications": "Notifications",
+  "settings.notifyOnComplete": "Notify when a download finishes",
+  "settings.notifyOnCompleteHint": "A system notification with the torrent name and its folder; its “Open folder” button opens the folder.",
   "settings.mockFinish": "Completa tutti i download (simulazione)",
   "settings.sectionBandwidth": "Banda",
   "settings.downLimit": "Limite di download, kB/s (0 = illimitato)",
@@ -228,6 +236,9 @@
   "power.banner.hibernate": "Il PC andrà in ibernazione tra {seconds} s",
   "power.cancel": "Annulla",
   "power.dryRun": "prova: il comando viene solo registrato nel log",
+  "notify.title": "Download complete",
+  "notify.completed": "{name} finished downloading",
+  "notify.openFolder": "Open folder",
 
   "toast.noSelection": "Seleziona prima un torrent",
   "toast.removed": "Rimossi {count} torrent",
@@ -237,5 +248,7 @@
   "toast.movedFiles": "{count} file spostati nella nuova cartella",
   "toast.movedFailed": "{count} file restano nella vecchia cartella e verranno scaricati di nuovo",
   "toast.restartRequired": "Riavvia l'app per applicare le modifiche a porta e uTP",
+  "toast.addedMany": "Added {count} torrent(s)",
+  "toast.failedMany": "{count} torrent(s) could not be added",
   "toast.torrentNotFound": "File torrent non trovato: {path}"
 }

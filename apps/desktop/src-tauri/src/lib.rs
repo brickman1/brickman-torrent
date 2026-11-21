@@ -6,7 +6,7 @@
 //! `run_blocking` helper is the single place where that is handled.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -30,6 +30,17 @@ const LINK_EVENT: &str = "link-received";
 /// Upper bound of the clipboard text handed to the UI: a magnet link is well
 /// under 1 KiB, and a pasted document must not travel to the frontend.
 const CLIPBOARD_LIMIT: usize = 8 * 1024;
+
+/// Sub folder of the data folder where a `.torrent` dropped on the window is
+/// staged: the webview hides the real path of a dropped file, so the frontend
+/// hands over the bytes and gets a path back.
+const STAGED_DIR: &str = "dropped";
+/// A `.torrent` file is a few kilobytes; anything this large is not one.
+const STAGED_LIMIT: usize = 8 * 1024 * 1024;
+/// A staged file the add dialog never used is cleaned up after this long.
+const STAGED_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+/// Longest staged file name kept, so the folder stays readable.
+const STAGED_NAME_LIMIT: usize = 120;
 
 /// Release feed checked by `check_for_updates`.
 const UPDATE_URL: &str = "https://api.github.com/repos/brickman1/brickman-torrent/releases/latest";
@@ -739,7 +750,12 @@ async fn add_torrent_file(
             // reported as a folder problem, not as a failed download.
             brickman_core::validate_output_dir(dir).map_err(user_message)?;
         }
-        let id = engine.add(Source::TorrentFile(path), request)?;
+        let id = engine.add(Source::TorrentFile(path.clone()), request)?;
+        // A staged drop is only a temporary copy: the engine has the metadata
+        // now, so the file does not have to stay in the data folder.
+        if is_staged(&staged_dir(), &path) {
+            let _ = std::fs::remove_file(&path);
+        }
         // A new download is a reason to stop a running "power off" countdown.
         monitor.cancel_countdown();
         engine.snapshot(id)
@@ -774,6 +790,135 @@ async fn pick_torrent_file(app: AppHandle) -> Result<Option<String>, String> {
         Ok(picked
             .and_then(|file| file.into_path().ok())
             .map(|file| file.to_string_lossy().into_owned()))
+    })
+    .await
+}
+
+// ------------------------------------------------------- dropped torrent files
+
+/// Folder where a `.torrent` dropped on the window is staged.
+fn staged_dir() -> PathBuf {
+    default_data_dir().join(STAGED_DIR)
+}
+
+/// A dropped file name as a single usable path component.
+///
+/// The name comes from the dropped file, so it is only trusted after the path
+/// separators and the characters Windows refuses are gone; a name that is still
+/// unusable (a reserved device name, an empty one) becomes `dropped.torrent`.
+fn staged_file_name(raw: &str) -> String {
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
+    let mut cleaned: String = base
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*') {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    // Windows cannot create a name that ends with a space or a dot.
+    cleaned = cleaned.trim_matches([' ', '.']).to_string();
+    while cleaned.len() > STAGED_NAME_LIMIT {
+        cleaned.pop();
+    }
+    if cleaned.is_empty() {
+        return "dropped.torrent".to_string();
+    }
+    if !cleaned.to_ascii_lowercase().ends_with(".torrent") {
+        cleaned.push_str(".torrent");
+    }
+    if brickman_core::validate_component(&cleaned).is_err() {
+        return "dropped.torrent".to_string();
+    }
+    cleaned
+}
+
+/// Writes the bytes of a dropped `.torrent` into `dir` and returns the path.
+///
+/// `name` is only a hint: the file is never overwritten, so a second drop with
+/// the same name gets `name-1.torrent` and a dialog that is still open keeps
+/// working with the file it was given.
+fn stage_torrent_in(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    if bytes.is_empty() {
+        return Err("the dropped file is empty".to_string());
+    }
+    if bytes.len() > STAGED_LIMIT {
+        return Err(format!(
+            "the dropped file is too large ({} bytes)",
+            bytes.len()
+        ));
+    }
+    std::fs::create_dir_all(dir)
+        .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
+    prune_staged(dir);
+
+    let name = staged_file_name(name);
+    let stem = Path::new(&name)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "dropped".to_string());
+    let mut path = dir.join(&name);
+    let mut counter = 1_u32;
+    while path.exists() {
+        if counter > 1000 {
+            return Err(format!("too many staged files in {}", dir.display()));
+        }
+        path = dir.join(format!("{stem}-{counter}.torrent"));
+        counter += 1;
+    }
+    std::fs::write(&path, bytes)
+        .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+    Ok(path)
+}
+
+/// Writes a dropped `.torrent` to the staging folder of the app.
+fn stage_torrent_bytes(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    stage_torrent_in(&staged_dir(), name, bytes)
+}
+
+/// Drops staged files nothing used, so a cancelled add dialog does not leak.
+fn prune_staged(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let stale = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > STAGED_MAX_AGE);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// True for a file this app staged: only such a copy is deleted after the
+/// engine read it, a file the user picked is never touched.
+fn is_staged(dir: &Path, path: &Path) -> bool {
+    path.starts_with(dir)
+}
+
+/// Writes a `.torrent` dropped on the window to the staging folder.
+///
+/// The webview hands over the bytes of a dropped file, not its path; this turns
+/// them back into a file so preview, the add dialog and the engine work exactly
+/// like with a file from the file dialog.
+#[tauri::command]
+async fn stage_torrent_file(name: String, bytes: Vec<u8>) -> Result<String, String> {
+    run_blocking(move || {
+        Ok(stage_torrent_bytes(&name, &bytes)?
+            .to_string_lossy()
+            .into_owned())
     })
     .await
 }
@@ -1410,6 +1555,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             engine: tokio::sync::Mutex::new(None),
@@ -1427,6 +1573,7 @@ pub fn run() {
             first_directory,
             pick_torrent_file,
             preview_torrent_file,
+            stage_torrent_file,
             open_folder,
             set_torrent_output_dir,
             list_torrents,
@@ -1464,6 +1611,57 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staged_name_stays_one_usable_component() {
+        assert_eq!(
+            staged_file_name("ubuntu-24.04-desktop-amd64.iso.torrent"),
+            "ubuntu-24.04-desktop-amd64.iso.torrent"
+        );
+        // A path is cut to its last component, the extension is kept.
+        assert_eq!(staged_file_name(r"C:\Users\me\Desktop\a b.TORRENT"), "a b.TORRENT");
+        assert_eq!(staged_file_name("../../evil"), "evil.torrent");
+        // Characters Windows refuses become `_`.
+        assert_eq!(staged_file_name("a:b?.torrent"), "a_b_.torrent");
+        // Unusable names fall back to a fixed one.
+        assert_eq!(staged_file_name(""), "dropped.torrent");
+        assert_eq!(staged_file_name("../../"), "dropped.torrent");
+        assert_eq!(staged_file_name("con.torrent"), "dropped.torrent");
+        assert_eq!(staged_file_name("name without extension"), "name without extension.torrent");
+
+        let long = format!("{}.torrent", "a".repeat(STAGED_NAME_LIMIT + 40));
+        assert!(staged_file_name(&long).len() <= STAGED_NAME_LIMIT + ".torrent".len());
+    }
+
+    fn staging_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "brickman-desktop-stage-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn a_dropped_torrent_is_staged_without_overwriting() {
+        let dir = staging_dir("twice");
+        let first = stage_torrent_in(&dir, "a.torrent", b"one").expect("stage");
+        let second = stage_torrent_in(&dir, "a.torrent", b"two").expect("stage");
+
+        assert_ne!(first, second, "the second drop must not overwrite the first");
+        assert_eq!(std::fs::read(&first).expect("read"), b"one");
+        assert_eq!(std::fs::read(&second).expect("read"), b"two");
+        assert!(is_staged(&dir, &first));
+        assert!(!is_staged(&dir, Path::new("C:\\Users\\me\\Desktop\\a.torrent")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_staged_torrent_must_not_be_empty() {
+        let dir = staging_dir("empty");
+        assert!(stage_torrent_in(&dir, "a.torrent", b"").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn clipboard_text_is_trimmed() {

@@ -76,6 +76,8 @@ export async function createTauriProvider(
     addMagnet: (uri, addOptions) =>
       call<Torrent>('add_magnet', { uri: uri ?? null, ...addArgs(addOptions) }),
     previewFile: (name) => call<TorrentPreview>('preview_torrent_file', { name }),
+    stageDroppedTorrent: (name, bytes) =>
+      call<string>('stage_torrent_file', { name, bytes: Array.from(bytes) }),
 
     pickTorrentFile: () => call<string | null>('pick_torrent_file'),
     pickFolder: () => call<string | null>('pick_directory'),

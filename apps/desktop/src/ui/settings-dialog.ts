@@ -78,6 +78,7 @@ export function buildSettingsForm(
   const upLimit = numberInput(settings.upLimit, 0, 1000000);
   const checkUpdates = checkbox(settings.checkUpdatesOnStartup);
   const createSubfolder = checkbox(settings.createSubfolderDefault);
+  const notifyOnComplete = checkbox(settings.notifyOnComplete);
 
   // Empty = the system default (Downloads); the Rust side resolves it.
   const folder = buildFolderField({
@@ -283,6 +284,15 @@ export function buildSettingsForm(
     field(t('settings.powerDelay'), powerDelay, t('settings.powerDelayHint')),
     powerWarning,
 
+    el('div', { class: 'settings-section', text: t('settings.sectionNotifications') }),
+    el(
+      'label',
+      { class: 'check-row' },
+      notifyOnComplete,
+      el('span', { text: t('settings.notifyOnComplete') }),
+    ),
+    el('p', { class: 'hint', text: t('settings.notifyOnCompleteHint') }),
+
     el('div', { class: 'settings-section', text: t('settings.sectionBandwidth') }),
     field(t('settings.downLimit'), downLimit, t('settings.limitHint')),
     field(t('settings.upLimit'), upLimit, t('settings.limitHint')),
@@ -340,6 +350,7 @@ export function buildSettingsForm(
       createSubfolderDefault: createSubfolder.checked,
       onDownloadsComplete: normalizePowerAction(powerAction.value),
       powerDelaySecs: normalizePowerDelay(powerDelay.value),
+      notifyOnComplete: notifyOnComplete.checked,
       recentFolders,
       // Not edited here: kept so applying the dialog does not lose the drag.
       columnWidths: settings.columnWidths,

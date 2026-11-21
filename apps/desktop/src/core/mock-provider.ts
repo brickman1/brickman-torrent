@@ -239,6 +239,15 @@ export class MockProvider implements TorrentProvider {
     };
   }
 
+  /**
+   * A browser hides the path of a dropped file as well; the mock invents one in
+   * the pretend download folder, so the add dialog behaves like in the app.
+   */
+  async stageDroppedTorrent(name: string, _bytes: Uint8Array): Promise<string> {
+    const file = baseName(name.trim() || 'dropped.torrent');
+    return joinPath('C:\\Users\\you\\Downloads', file);
+  }
+
   /** Mimics the Rust check: the same messages, no filesystem access. */
   async validateDir(dir: string): Promise<void> {
     const path = dir.trim();

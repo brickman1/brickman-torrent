@@ -41,11 +41,11 @@ export interface DetailsContext {
 
 const scrollMemory = new WeakMap<HTMLElement, number>();
 
-function miniBar(progress: number): HTMLElement {
+function miniBar(progress: number, status?: string): HTMLElement {
   const pct = Math.min(100, Math.max(0, progress * 100));
   return el(
     'div',
-    { class: `prog prog-small${progress >= 1 ? ' complete' : ''}` },
+    { class: `prog prog-small${status ? ` prog-${status}` : ''}${progress >= 1 ? ' complete' : ''}` },
     el('div', { class: 'prog-track' }, el('div', { class: 'prog-fill', style: `width:${pct.toFixed(2)}%` })),
     el('span', { class: 'prog-text', text: formatPercent(progress) }),
   );
@@ -133,7 +133,7 @@ function generalTab(torrent: Torrent): HTMLElement {
   return el(
     'div',
     { class: 'general-tab' },
-    el('div', { class: 'general-head' }, el('span', { class: 'general-name', text: torrent.name }), miniBar(torrent.progress)),
+    el('div', { class: 'general-head' }, el('span', { class: 'general-name', text: torrent.name }), miniBar(torrent.progress, status)),
     grid,
   );
 }

@@ -278,7 +278,8 @@ await page.waitForTimeout(300);
 const ruSidebar = await page.locator('.side-item').first().innerText();
 check('RU locale switches sidebar', ruSidebar.includes('Все'), ruSidebar.replace(/\s+/g, ' '));
 const ruHeader = await page.locator('th.col-name').innerText();
-check('RU locale switches table header', ruHeader.includes('Имя'), ruHeader);
+// The header row is uppercased by CSS, and `innerText` reports it that way.
+check('RU locale switches table header', /имя/i.test(ruHeader), ruHeader);
 await page.locator('.tb-select').selectOption('en');
 await page.waitForTimeout(300);
 

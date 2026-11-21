@@ -1,4 +1,4 @@
-// Torrent table: fixed columns, 24 px rows, click-to-sort headers.
+// Torrent table: fixed columns, 30 px rows, click-to-sort headers.
 //
 // The "#" column is the queue position: rows come from the provider in queue
 // order and the first row is the torrent that downloads first.
@@ -35,7 +35,7 @@ export interface ColumnDef {
 }
 
 export const COLUMNS: ColumnDef[] = [
-  { key: 'ordinal', sortKey: 'ordinal', labelKey: 'column.index', width: '3%', align: 'right' },
+  { key: 'ordinal', sortKey: 'ordinal', labelKey: 'column.index', width: '56px', align: 'right' },
   { key: 'name', sortKey: 'name', labelKey: 'column.name', width: '31.5%', align: 'left' },
   { key: 'size', sortKey: 'size', labelKey: 'column.size', width: '7%', align: 'right' },
   { key: 'status', sortKey: 'status', labelKey: 'column.status', width: '9%', align: 'left' },
@@ -156,11 +156,11 @@ export function renderRows(
   tbody.appendChild(frag);
 }
 
-function progressBar(progress: number): HTMLElement {
+function progressBar(progress: number, status: string): HTMLElement {
   const pct = Math.min(100, Math.max(0, progress * 100));
   return el(
     'div',
-    { class: `prog${progress >= 1 ? ' complete' : ''}` },
+    { class: `prog prog-${status}${progress >= 1 ? ' complete' : ''}` },
     el('div', { class: 'prog-track' }, el('div', { class: 'prog-fill', style: `width:${pct.toFixed(2)}%` })),
     el('span', { class: 'prog-text', text: formatPercent(progress) }),
   );
@@ -182,6 +182,9 @@ function ordinalCell(torrent: Torrent, activeTop: boolean): HTMLTableCellElement
 function buildRow(torrent: Torrent, selected: boolean, options: RowOptions): HTMLTableRowElement {
   const status = effectiveStatus(torrent);
   const speedClass = (value: number): string => `num speed${value > 0 ? '' : ' zero'}`;
+  // Swarm health is colour only; the counts stay next to the dot and the title
+  // spells them out, so the colour never carries the meaning alone.
+  const health = torrent.seeds >= 10 ? 'good' : torrent.seeds >= 1 ? 'warn' : 'bad';
   const row = el(
     'tr',
     {
@@ -193,10 +196,18 @@ function buildRow(torrent: Torrent, selected: boolean, options: RowOptions): HTM
     el('td', { class: 'name-cell', title: torrent.name }, el('span', { class: 'name-text', text: torrent.name })),
     el('td', { class: 'num' }, formatSize(torrent.size)),
     el('td', { class: 'status-cell' }, el('span', { class: `status st-${status}`, text: t(`status.${status}`) })),
-    el('td', { class: 'progress-cell' }, progressBar(torrent.progress)),
+    el('td', { class: 'progress-cell' }, progressBar(torrent.progress, status)),
     el('td', { class: speedClass(torrent.downSpeed) }, formatSpeed(torrent.downSpeed)),
     el('td', { class: speedClass(torrent.upSpeed) }, formatSpeed(torrent.upSpeed)),
-    el('td', { class: 'num' }, `${torrent.seeds} (${torrent.seedsTotal})`),
+    el(
+      'td',
+      { class: 'num seeds-cell' },
+      el('span', {
+        class: `health-dot ${health}`,
+        title: `${t('column.seeds')}: ${torrent.seeds} (${torrent.seedsTotal})`,
+      }),
+      `${torrent.seeds} (${torrent.seedsTotal})`,
+    ),
     el('td', { class: 'num' }, `${torrent.peers} (${torrent.peersTotal})`),
     el('td', { class: `num eta${torrent.etaSec ? '' : ' zero'}` }, formatEta(torrent.etaSec)),
     el('td', { class: 'label-cell', text: torrent.label }),

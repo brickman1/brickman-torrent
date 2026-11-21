@@ -185,6 +185,25 @@ export interface TorrentPreview {
   files: number;
 }
 
+/** Whether the app opens `magnet:` links and `.torrent` files (Windows handlers). */
+export interface HandlerStatus {
+  /** The `magnet:` command line points at this executable. */
+  registered: boolean;
+  /** The previous handlers are backed up, so the registration can be undone. */
+  backupPresent: boolean;
+  /** Why the last operation failed, if it did. */
+  error?: string;
+}
+
+/** A link or file the shell handed over (`link-received`). */
+export interface LinkPayload {
+  kind: 'magnet' | 'torrent';
+  /** The magnet link or the path of the `.torrent` file. */
+  value: string;
+  /** A `.torrent` path that is gone is reported instead of silently dropped. */
+  exists: boolean;
+}
+
 /** Result of moving a torrent to another folder. */
 export interface OutputDirChange {
   torrent: Torrent;

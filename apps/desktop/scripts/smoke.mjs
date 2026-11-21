@@ -415,6 +415,106 @@ check(
 await page.keyboard.press('Escape');
 await page.waitForTimeout(150);
 
+// --- links: handler registration ---------------------------------------
+await openSettings();
+await page.waitForTimeout(250); // the status is asked from the engine
+const linksStatus = async () =>
+  (await page.locator('.links-status-text').innerText()).trim();
+const settingsTextWithLinks = await page.locator('.settings-form').innerText();
+check(
+  'settings has a Links section',
+  // The section title is uppercased by CSS, and `innerText` reports it that way.
+  /links/i.test(settingsTextWithLinks) && (await page.locator('.links-status-text').count()) === 1,
+  settingsTextWithLinks.slice(-160),
+);
+check(
+  'the handler starts as not registered',
+  (await linksStatus()) === 'not registered',
+  await linksStatus(),
+);
+check(
+  '"Remove registration" is hidden while nothing was registered',
+  !(await page.locator('.links-unregister').isVisible()),
+);
+await page.locator('.links-register').click();
+await page.waitForTimeout(400);
+check(
+  '"Make default" switches the status to registered',
+  (await linksStatus()) === 'registered',
+  await linksStatus(),
+);
+check(
+  '"Remove registration" appears after registering',
+  await page.locator('.links-unregister').isVisible(),
+);
+await page.locator('.links-unregister').click();
+await page.waitForTimeout(400);
+check(
+  '"Remove registration" puts the original state back',
+  (await linksStatus()) === 'not registered',
+  await linksStatus(),
+);
+await page.getByRole('button', { name: 'Cancel' }).click();
+await page.waitForTimeout(200);
+
+// --- links: Ctrl+V and link-received ------------------------------------
+const PASTED = 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Paste+Test';
+const addSourceInput = () => page.locator('.modal .add-form .text-input').first();
+const pressPaste = () =>
+  page.evaluate(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, bubbles: true }));
+  });
+
+await page.evaluate((text) => window.__torrentProvider.mockHooks.setClipboard(text), PASTED);
+await pressPaste();
+await page.waitForSelector('.modal-overlay .add-form');
+check(
+  'Ctrl+V with a magnet link opens the add dialog with that link',
+  (await addSourceInput().inputValue()) === PASTED,
+  await addSourceInput().inputValue(),
+);
+await page.getByRole('button', { name: 'Cancel' }).click();
+await page.waitForTimeout(200);
+
+await page.evaluate(() => window.__torrentProvider.mockHooks.setClipboard('just some text'));
+await pressPaste();
+await page.waitForTimeout(300);
+check(
+  'Ctrl+V with plain text does nothing',
+  (await page.locator('.modal-overlay').count()) === 0,
+);
+await page.evaluate(() => window.__torrentProvider.mockHooks.setClipboard(null));
+
+// A `.torrent` path that is gone must be reported, not silently dropped.
+await page.evaluate(() => {
+  window.__torrentProvider.mockHooks.emitLink({
+    kind: 'torrent',
+    value: 'C:\\nowhere\\gone.torrent',
+    exists: false,
+  });
+});
+await page.waitForTimeout(300);
+const missingLinkToast = await page.locator('.toast').last().innerText().catch(() => '');
+check(
+  'a missing .torrent link shows a "file not found" error',
+  /not found/i.test(missingLinkToast) && missingLinkToast.includes('gone.torrent'),
+  missingLinkToast,
+);
+
+// A magnet link handed over by the shell opens the add dialog as well.
+const LINKED = 'magnet:?xt=urn:btih:abcdefabcdefabcdefabcdefabcdefabcdefabcd&dn=Event+Test';
+await page.evaluate((uri) => {
+  window.__torrentProvider.mockHooks.emitLink({ kind: 'magnet', value: uri, exists: true });
+}, LINKED);
+await page.waitForSelector('.modal-overlay .add-form');
+check(
+  'a magnet link from the shell opens the add dialog',
+  (await addSourceInput().inputValue()) === LINKED,
+  await addSourceInput().inputValue(),
+);
+await page.getByRole('button', { name: 'Cancel' }).click();
+await page.waitForTimeout(200);
+
 check('no console/page errors', errors.length === 0, errors.join(' | '));
 
 await browser.close();

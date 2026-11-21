@@ -172,6 +172,16 @@
   "settings.checkUpdatesHint": "Единственный сетевой запрос, кроме самих торрентов. Отключается.",
   "settings.mockUpdate": "Имитировать доступное обновление (мок)",
   "settings.mockUpdateHint": "Позволяет проверить оба ответа: обновление есть / версия актуальна.",
+  "settings.sectionLinks": "Ссылки",
+  "settings.linksHandler": "Brickman Torrent открывает magnet-ссылки и .torrent",
+  "settings.linksRegistered": "зарегистрировано",
+  "settings.linksNotRegistered": "не зарегистрировано",
+  "settings.linksChecking": "проверка…",
+  "settings.linksRegister": "Сделать по умолчанию",
+  "settings.linksUnregister": "Убрать регистрацию",
+  "settings.linksOpenSettings": "Открыть параметры Windows → Приложения по умолчанию",
+  "settings.linksResetHint": "Windows может сбросить ассоциацию после крупных обновлений: включите её здесь заново или выберите приложение в параметрах Windows.",
+  "settings.linksUnavailable": "Ассоциации файлов доступны только в приложении для Windows.",
   "settings.sectionAppearance": "Внешний вид",
   "settings.theme": "Тема",
   "settings.language": "Язык",
@@ -206,5 +216,6 @@
   "toast.error": "Операция не удалась",
   "toast.sortToReorder": "Отсортируйте по №, чтобы менять очередь",
   "toast.movedFiles": "В новую папку перенесено файлов: {count}",
-  "toast.movedFailed": "Файлов осталось в старой папке: {count} — они будут скачаны заново"
+  "toast.movedFailed": "Файлов осталось в старой папке: {count} — они будут скачаны заново",
+  "toast.torrentNotFound": "Торрент-файл не найден: {path}"
 }

@@ -1,6 +1,8 @@
 import type {
   AddTorrentOptions,
   FilePriority,
+  HandlerStatus,
+  LinkPayload,
   OutputDirChange,
   PeerInfo,
   PowerSettings,
@@ -68,6 +70,26 @@ export interface TorrentProvider {
   openExternal(url: string): Promise<void>;
 
   /**
+   * Windows handler registration: whether the app opens `magnet:` links and
+   * `.torrent` files. Registering is per user and reversible; a failure is
+   * reported in `error` instead of rejecting.
+   */
+  handlerStatus?(): Promise<HandlerStatus>;
+  handlerRegister?(): Promise<HandlerStatus>;
+  /** Puts the handlers that were there before the registration back. */
+  handlerUnregister?(): Promise<HandlerStatus>;
+  /** Opens the Windows "Default apps" page, the fallback when the switch does not stick. */
+  openDefaultApps?(): Promise<void>;
+
+  /** Text from the clipboard, for Ctrl+V of a magnet link. */
+  readClipboard?(): Promise<string | null>;
+  /**
+   * Links the shell hands over (a second launch, a double click on a
+   * `.torrent` file). Returns the unsubscribe function.
+   */
+  onLinkReceived?(handler: (payload: LinkPayload) => void): () => void;
+
+  /**
    * "Power off when downloads finish": the settings and the countdown state.
    * The countdown itself lives in the engine (Rust); the UI only shows it.
    */
@@ -76,7 +98,7 @@ export interface TorrentProvider {
   /** The "Cancel" button of the countdown banner. */
   cancelPowerOff?(): Promise<PowerStatus | void>;
 
-  /** Optional engine lifecycle hooks (mock provider only). */
+  /** Optional engine lifecycle hooks (mock provider, and the event listener). */
   connect?(): void;
   disconnect?(): void;
 
@@ -86,5 +108,9 @@ export interface TorrentProvider {
     isUpdateAvailable(): boolean;
     /** Demo hook: pretends every torrent reached 100 % (power-off banner). */
     finishAllDownloads?(): void;
+    /** Demo hook: the text `readClipboard` answers with. */
+    setClipboard?(text: string | null): void;
+    /** Demo hook: delivers a `link-received` payload to the window. */
+    emitLink?(payload: LinkPayload): void;
   };
 }

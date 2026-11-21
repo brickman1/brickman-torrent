@@ -1211,6 +1211,53 @@ button {
   font-size: 10px;
 }
 
+/* ------------------------------------------------------- links / handlers */
+
+.links-box {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.links-status-row {
+  gap: 8px;
+}
+
+.links-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+
+.links-dot.ok {
+  background: var(--ok);
+}
+
+.links-label {
+  font-weight: 600;
+}
+
+.links-status-text {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.links-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.links-open-settings {
+  align-self: flex-start;
+  min-width: 0;
+  height: 19px;
+  padding: 0 6px;
+  font-size: 10px;
+}
+
 .dialog-text {
   margin: 0;
 }

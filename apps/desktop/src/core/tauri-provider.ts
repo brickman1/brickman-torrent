@@ -5,6 +5,8 @@ import type { TorrentProvider } from './provider';
 import type {
   AddTorrentOptions,
   FilePriority,
+  HandlerStatus,
+  LinkPayload,
   OutputDirChange,
   PeerInfo,
   PowerSettings,
@@ -20,6 +22,9 @@ import { APP_VERSION } from './version';
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
+/** Event the Rust side uses to hand a link or a `.torrent` file to the window. */
+const LINK_EVENT = 'link-received';
+
 export interface TauriProviderOptions {
   /** Download folder from the UI settings; empty = system default. */
   downloadDir?: string;
@@ -33,7 +38,20 @@ export async function createTauriProvider(
   options: TauriProviderOptions = {},
 ): Promise<TorrentProvider> {
   const { invoke } = await import('@tauri-apps/api/core');
+  const { listen } = await import('@tauri-apps/api/event');
   const call = invoke as Invoke;
+
+  // The listener has to exist before `engine_init`: that command flushes the
+  // links of the first launch (a `magnet:` argument of this very process), and
+  // an event emitted without a listener is lost. Links that arrive before the
+  // window subscribes are kept and handed over by `onLinkReceived`.
+  const buffered: LinkPayload[] = [];
+  let onLink: ((payload: LinkPayload) => void) | null = null;
+  const stopListening = await listen<LinkPayload>(LINK_EVENT, (event) => {
+    const payload = event.payload;
+    if (onLink) onLink(payload);
+    else buffered.push(payload);
+  });
 
   // The engine is created once, here, with the download folder from settings.
   await call<void>('engine_init', { downloadDir: options.downloadDir ?? null });
@@ -88,6 +106,29 @@ export async function createTauriProvider(
 
     openExternal: async (url: string) => {
       await call<void>('open_external', { url });
+    },
+
+    handlerStatus: () => call<HandlerStatus>('handler_status'),
+    handlerRegister: () => call<HandlerStatus>('handler_register'),
+    handlerUnregister: () => call<HandlerStatus>('handler_unregister'),
+    openDefaultApps: () => call<void>('open_default_apps'),
+
+    readClipboard: () => call<string | null>('read_clipboard'),
+
+    onLinkReceived: (handler) => {
+      onLink = handler;
+      for (const payload of buffered.splice(0)) handler(payload);
+      return () => {
+        if (onLink === handler) onLink = null;
+      };
+    },
+
+    // The window owns the listener for its lifetime: the only thing to undo is
+    // the delivery, so a link arriving while the page unloads is not handled.
+    disconnect: () => {
+      onLink = null;
+      buffered.length = 0;
+      void stopListening();
     },
   };
 

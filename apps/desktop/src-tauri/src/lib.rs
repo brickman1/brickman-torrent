@@ -1163,6 +1163,19 @@ async fn open_external(url: String, app: AppHandle) -> Result<(), String> {
         .map_err(|error| format!("cannot open {url}: {error}"))
 }
 
+/// Opens the Windows page "Default apps".
+///
+/// This is the fallback for the handler registration: Windows 11 may reset the
+/// association after a major update, and the user can then pick the app there.
+/// The URL is fixed here, so the frontend cannot pass another scheme.
+#[tauri::command]
+async fn open_default_apps(app: AppHandle) -> Result<(), String> {
+    const URL: &str = "ms-settings:defaultapps";
+    app.opener()
+        .open_url(URL, None::<&str>)
+        .map_err(|error| format!("cannot open {URL}: {error}"))
+}
+
 // ------------------------------------------------------- links and handlers
 
 /// Text from the clipboard, for Ctrl+V in the "add link" dialog.
@@ -1350,6 +1363,7 @@ pub fn run() {
             list_peers,
             check_for_updates,
             open_external,
+            open_default_apps,
             read_clipboard,
             handler_status,
             handler_register,

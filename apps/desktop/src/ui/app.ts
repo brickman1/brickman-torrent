@@ -9,6 +9,7 @@ import {
   type AddTorrentOptions,
   type AppSettings,
   type FilePriority,
+  type LinkPayload,
   type OutputDirChange,
   type PeerInfo,
   type PowerAction,
@@ -128,6 +129,8 @@ export class App {
   private trackers: TrackerInfo[] = [];
   private peers: PeerInfo[] = [];
   private pollHandle: number | null = null;
+  /** Stops the `link-received` delivery on unload. */
+  private unsubscribeLinks: (() => void) | null = null;
 
   private updateState: 'idle' | 'checking' | 'available' | 'uptodate' = 'idle';
   private updateInfo: UpdateInfo | null = null;
@@ -161,6 +164,7 @@ export class App {
     ]);
 
     this.buildShell();
+    this.subscribeLinks();
     await this.refresh();
 
     this.pollHandle = window.setInterval(() => {
@@ -171,6 +175,7 @@ export class App {
 
     window.addEventListener('beforeunload', () => {
       this.provider.disconnect?.();
+      this.unsubscribeLinks?.();
       if (this.pollHandle !== null) window.clearInterval(this.pollHandle);
     });
 
@@ -867,6 +872,66 @@ export class App {
     });
   }
 
+  // ----------------------------------------------------------- incoming links
+
+  /**
+   * Links the shell hands over: a `magnet:` link from the command line of this
+   * or a second launch, a `.torrent` file from a double click. The engine
+   * buffers them until this subscription exists, so nothing is lost while the
+   * window is still starting.
+   */
+  private subscribeLinks(): void {
+    const subscribe = this.provider.onLinkReceived;
+    if (!subscribe) return;
+    this.unsubscribeLinks = subscribe.call(this.provider, (payload) => this.handleLink(payload));
+  }
+
+  private handleLink(payload: LinkPayload): void {
+    if (payload.kind === 'magnet') {
+      void this.showAddDialog({ mode: 'magnet', uri: payload.value });
+      return;
+    }
+    if (!payload.exists) {
+      this.toast(t('toast.torrentNotFound', { path: payload.value }));
+      return;
+    }
+    void this.addLinkedTorrent(payload.value);
+  }
+
+  /** A `.torrent` file handed over by the shell: added without a dialog. */
+  private async addLinkedTorrent(path: string): Promise<void> {
+    try {
+      const torrent = await this.provider.addFile(path);
+      this.state.selection = new Set([torrent.id]);
+      this.state.anchorId = torrent.id;
+      this.state.filter = { kind: 'all' };
+      this.toast(t('toast.added', { name: torrent.name }));
+      await this.refresh(true);
+    } catch (err) {
+      this.toast(errorText(err));
+    }
+  }
+
+  /**
+   * Ctrl+V in the main window: a magnet link on the clipboard opens the add
+   * dialog. Anything else is left to the normal paste — this runs only when no
+   * input has the focus and no dialog is open.
+   */
+  private async pasteMagnetLink(): Promise<void> {
+    const read = this.provider.readClipboard;
+    if (!read) return;
+    let text: string | null;
+    try {
+      text = await read.call(this.provider);
+    } catch (err) {
+      console.warn('[brickman-torrent] cannot read the clipboard', err);
+      return;
+    }
+    const link = text?.trim() ?? '';
+    if (!link.toLowerCase().startsWith('magnet:')) return;
+    await this.showAddDialog({ mode: 'magnet', uri: link });
+  }
+
   /**
    * Opens the add dialog. A `.torrent` file is previewed first, so the sub
    * folder checkbox starts in the right state and an unreadable file is
@@ -1325,6 +1390,14 @@ export class App {
     if (document.querySelector('.modal-overlay')) return;
     const target = event.target as HTMLElement | null;
     if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') {
+      // A magnet link on the clipboard opens the add dialog; any other text is
+      // a normal paste and is not touched. `preventDefault` is deliberately not
+      // called: there is nothing to paste into outside the inputs above.
+      void this.pasteMagnetLink();
+      return;
+    }
 
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
       event.preventDefault();

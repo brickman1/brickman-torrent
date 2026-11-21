@@ -172,6 +172,16 @@
   "settings.checkUpdatesHint": "The only network request besides torrents themselves. Can be disabled.",
   "settings.mockUpdate": "Simulate an available update (mock)",
   "settings.mockUpdateHint": "Lets you test both answers: update available / up to date.",
+  "settings.sectionLinks": "Links",
+  "settings.linksHandler": "Brickman Torrent opens magnet links and .torrent files",
+  "settings.linksRegistered": "registered",
+  "settings.linksNotRegistered": "not registered",
+  "settings.linksChecking": "checking…",
+  "settings.linksRegister": "Make default",
+  "settings.linksUnregister": "Remove registration",
+  "settings.linksOpenSettings": "Open Windows default apps",
+  "settings.linksResetHint": "Windows may reset the association after major updates: set it again here or pick the app in Windows settings.",
+  "settings.linksUnavailable": "File associations are only available in the desktop app on Windows.",
   "settings.sectionAppearance": "Appearance",
   "settings.theme": "Theme",
   "settings.language": "Language",
@@ -206,5 +216,6 @@
   "toast.error": "Operation failed",
   "toast.sortToReorder": "Sort by # to change the queue",
   "toast.movedFiles": "Moved {count} file(s) to the new folder",
-  "toast.movedFailed": "{count} file(s) stay in the old folder and will be downloaded again"
+  "toast.movedFailed": "{count} file(s) stay in the old folder and will be downloaded again",
+  "toast.torrentNotFound": "Torrent file not found: {path}"
 }

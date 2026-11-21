@@ -12,6 +12,7 @@ import {
 import { t } from '../i18n';
 import { el } from './dom';
 import { buildFolderField } from './folder-field';
+import { buildLinksSection } from './links-section';
 
 export interface SettingsFormOptions {
   isMock: boolean;
@@ -204,10 +205,15 @@ export function buildSettingsForm(
         )
       : null,
 
+    el('div', { class: 'settings-section', text: t('settings.sectionLinks') }),
+    // The buttons work on the registry, not on `AppSettings`: they act at once.
+    options.provider.handlerStatus
+      ? buildLinksSection(options.provider)
+      : el('p', { class: 'hint', text: t('settings.linksUnavailable') }),
+
     el('div', { class: 'settings-section', text: t('settings.sectionAppearance') }),
     field(t('settings.theme'), theme),
     field(t('settings.language'), language),
-
     el('div', { class: 'settings-version', text: t('settings.version', { version: options.version }) }),
   );
 

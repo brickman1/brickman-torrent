@@ -35,7 +35,10 @@ async function bootstrap(): Promise<void> {
   const provider = await resolveProvider(settings.downloadDir);
 
   const app = new App(root, provider, settings);
+  // Debug handles: the UI for a quick look in the console, and the provider so
+  // the smoke test can drive the mock engine (clipboard, incoming links).
   (window as unknown as { __torrentUI?: App }).__torrentUI = app;
+  (window as unknown as { __torrentProvider?: TorrentProvider }).__torrentProvider = provider;
   await app.init();
 }
 

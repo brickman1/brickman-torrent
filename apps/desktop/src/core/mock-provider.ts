@@ -18,6 +18,8 @@ import {
   normalizePowerDelay,
   type AddTorrentOptions,
   type FilePriority,
+  type HandlerStatus,
+  type LinkPayload,
   type OutputDirChange,
   type PeerInfo,
   type PowerAction,
@@ -40,6 +42,42 @@ const clamp = (value: number, min: number, max: number): number =>
 
 /** Folders the mock pretends to be able to write to (`Z:\nope` is refused). */
 const AVAILABLE_DRIVES = ['C', 'D', 'E'];
+
+/** Where the mock keeps the handler registration between reloads. */
+const HANDLER_STORAGE_KEY = 'brickman-torrent.handler.v1';
+
+/** The registration the mock pretends the registry holds. */
+interface MockHandlerState {
+  registered: boolean;
+  backupPresent: boolean;
+}
+
+const HANDLER_INITIAL: MockHandlerState = { registered: false, backupPresent: false };
+
+function loadHandlerState(): MockHandlerState {
+  try {
+    const raw = localStorage.getItem(HANDLER_STORAGE_KEY);
+    if (!raw) return { ...HANDLER_INITIAL };
+    const parsed = JSON.parse(raw) as Partial<MockHandlerState>;
+    return {
+      registered: parsed.registered === true,
+      // A registration without a backup could not be undone, so it is not a
+      // state the mock ever reports.
+      backupPresent: parsed.registered === true && parsed.backupPresent === true,
+    };
+  } catch (err) {
+    console.warn('[brickman-torrent][mock] cannot read the handler state', err);
+    return { ...HANDLER_INITIAL };
+  }
+}
+
+function saveHandlerState(state: MockHandlerState): void {
+  try {
+    localStorage.setItem(HANDLER_STORAGE_KEY, JSON.stringify(state));
+  } catch (err) {
+    console.warn('[brickman-torrent][mock] cannot store the handler state', err);
+  }
+}
 
 /**
  * Joins a folder and a name the way the engine does. `outputDir` is empty in a
@@ -68,6 +106,14 @@ export class MockProvider implements TorrentProvider {
     finishAllDownloads: (): void => {
       this.finishAllDownloads();
     },
+    /** What Ctrl+V finds on the clipboard (the smoke test drives it). */
+    setClipboard: (text: string | null): void => {
+      this.clipboardText = text;
+    },
+    /** Delivers a `link-received` payload, like the shell does. */
+    emitLink: (payload: LinkPayload): void => {
+      this.emitLink(payload);
+    },
   };
 
   private torrents: MockTorrent[] = createInitialTorrents();
@@ -78,6 +124,10 @@ export class MockProvider implements TorrentProvider {
   private updateAvailable = true;
   private tickHandle: number | null = null;
   private addCounter = 0;
+  /** The `magnet:` / `.torrent` registration, in memory and in localStorage. */
+  private handlerState: MockHandlerState = loadHandlerState();
+  private clipboardText: string | null = null;
+  private readonly linkHandlers = new Set<(payload: LinkPayload) => void>();
   // "Power off when downloads finish", mirrored from the Rust monitor.
   private powerAction: PowerAction = 'nothing';
   private powerDelaySecs = POWER_DELAY_DEFAULT;
@@ -309,6 +359,57 @@ export class MockProvider implements TorrentProvider {
 
   async openExternal(url: string): Promise<void> {
     console.info('[brickman-torrent][mock] would open external URL:', url);
+  }
+
+  // -------------------------------------------------------------- links
+
+  /**
+   * The registry the mock pretends to write: two booleans in localStorage.
+   * Registering also backs up "the previous handlers", which is what makes
+   * "Remove registration" possible; unregistering drops both again.
+   */
+  async handlerStatus(): Promise<HandlerStatus> {
+    return {
+      registered: this.handlerState.registered,
+      backupPresent: this.handlerState.backupPresent,
+    };
+  }
+
+  async handlerRegister(): Promise<HandlerStatus> {
+    await sleep(120);
+    this.handlerState = { registered: true, backupPresent: true };
+    saveHandlerState(this.handlerState);
+    console.info('[brickman-torrent][mock] registered as the magnet/.torrent handler');
+    return this.handlerStatus();
+  }
+
+  async handlerUnregister(): Promise<HandlerStatus> {
+    await sleep(120);
+    this.handlerState = { ...HANDLER_INITIAL };
+    saveHandlerState(this.handlerState);
+    console.info('[brickman-torrent][mock] handler registration removed');
+    return this.handlerStatus();
+  }
+
+  async openDefaultApps(): Promise<void> {
+    console.info('[brickman-torrent][mock] would open ms-settings:defaultapps');
+  }
+
+  /** The browser cannot read the real clipboard: the test sets the text. */
+  async readClipboard(): Promise<string | null> {
+    const text = this.clipboardText?.trim();
+    return text ? text : null;
+  }
+
+  onLinkReceived(handler: (payload: LinkPayload) => void): () => void {
+    this.linkHandlers.add(handler);
+    return () => {
+      this.linkHandlers.delete(handler);
+    };
+  }
+
+  private emitLink(payload: LinkPayload): void {
+    for (const handler of this.linkHandlers) handler(payload);
   }
 
   // ------------------------------------------------- power after downloads

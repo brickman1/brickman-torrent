@@ -21,6 +21,10 @@ jobs:
     # Only Windows is built for now; that is the platform the artifacts are
     # named for below (x64 NSIS setup + WiX MSI).
     runs-on: windows-latest
+    env:
+      # `secrets` is not allowed in a step `if`, so the token is mapped here and
+      # the signing steps key off this env var instead.
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -50,10 +54,10 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
           conf="$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")"
-          cargo_version="$(node -p "require('./apps/desktop/package.json').version")"
-          echo "tag=$tag tauri.conf=$conf package.json=$cargo_version"
-          if [ "$tag" != "$conf" ] || [ "$tag" != "$cargo_version" ]; then
-            echo "::error::tag v$tag does not match tauri.conf.json ($conf) / package.json ($cargo_version)"
+          pkg="$(node -p "require('./apps/desktop/package.json').version")"
+          echo "tag=$tag tauri.conf=$conf package.json=$pkg"
+          if [ "$tag" != "$conf" ] || [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag does not match tauri.conf.json ($conf) / package.json ($pkg)"
             exit 1
           fi
 
@@ -82,11 +86,52 @@ jobs:
           cp "$setup" "$msi" release-artifacts/
           ( cd release-artifacts && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt )
 
-      # TODO(release-signing): builds are unsigned for now. Before the first
-      # public release, wire up code signing here — SignPath.io (free for OSS)
-      # or Sigstore/cosign for the artifacts plus provenance — and verify the
-      # signature before uploading. Do not add signing secrets to this workflow
-      # until the owner has created them.
+      # --- Code signing (SignPath, free for OSS) --------------------------
+      # Skipped entirely unless the owner adds SIGNPATH_API_TOKEN and the repo
+      # variables SIGNPATH_ORGANIZATION_ID / SIGNPATH_PROJECT_SLUG /
+      # SIGNPATH_SIGNING_POLICY_SLUG / SIGNPATH_ARTIFACT_CONFIG_SLUG (see
+      # docs/SIGNING.md). Without them the release publishes unsigned, as before.
+      - name: Upload bundles for signing
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-bundles
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Submit signing request to SignPath
+        id: sign
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIG_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      # SignPath's OSS program requires a manual approval per release, so
+      # wait-for-completion above pauses here until the owner approves in the
+      # SignPath UI; the signing-request-web-url is printed in the step output.
+      - name: Replace bundles with the signed copies
+        if: steps.sign.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The action returns the signed files under `signed/` (a zip is
+          # decompressed into that directory). Keep the exact filenames.
+          if compgen -G "signed/*" > /dev/null; then
+            cp -f signed/* release-artifacts/ 2>/dev/null || true
+            rm -f release-artifacts/SHA256SUMS.txt
+            ( cd release-artifacts && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt )
+          else
+            echo "::warning::no signed files found, publishing unsigned"
+          fi
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:

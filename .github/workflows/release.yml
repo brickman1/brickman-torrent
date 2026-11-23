@@ -64,8 +64,45 @@ jobs:
       - name: cargo build --release
         run: cargo build --release
 
+      # --- Updater signing key (optional) ---------------------------------
+      # `secrets` cannot be used in a step `if`, so the presence of the key is
+      # turned into an output and every updater step keys off it. Without the
+      # secret the release stays exactly as before: unsigned bundles, no .sig
+      # and no latest.json. See docs/UPDATER.md.
+      - name: Detect updater signing key
+        id: updater
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "TAURI_SIGNING_PRIVATE_KEY is set: building updater artifacts"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "no TAURI_SIGNING_PRIVATE_KEY: plain unsigned bundles, updater disabled"
+          fi
+
       - name: Build Tauri bundles
+        if: steps.updater.outputs.enabled != 'true'
         run: npm --prefix apps/desktop run tauri build
+
+      # `createUpdaterArtifacts` is deliberately not in tauri.conf.json: it is
+      # merged in here only when the key exists, so a normal build without a
+      # key cannot fail. The key and its password come from repository secrets.
+      - name: Build Tauri bundles with updater artifacts
+        if: steps.updater.outputs.enabled == 'true'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cat > updater-build.json <<'JSON'
+          {"bundle":{"createUpdaterArtifacts":true}}
+          JSON
+          npm --prefix apps/desktop run tauri build -- --config "$GITHUB_WORKSPACE/updater-build.json"
 
       - name: Collect bundles and checksums
         shell: bash
@@ -141,3 +178,67 @@ jobs:
             release-artifacts/SHA256SUMS.txt
           fail_on_unmatched_files: true
           generate_release_notes: true
+
+      # --- Updater manifest (only with a signing key) ---------------------
+      # Runs after SignPath replaced the bundles: Authenticode signing changes
+      # the bytes of the setup, so the updater signature is made from the final
+      # file and not from the one the bundler produced.
+      - name: Sign the updater bundle and write latest.json
+        if: steps.updater.outputs.enabled == 'true'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          setup="release-artifacts/Brickman Torrent_${ver}_x64-setup.exe"
+          if [ ! -f "$setup" ]; then
+            echo "::error::$setup not found, cannot create updater artifacts"
+            exit 1
+          fi
+          # `tauri signer sign` writes `<file>.sig` next to the input.
+          npm --prefix apps/desktop run tauri -- signer sign "$GITHUB_WORKSPACE/$setup"
+          if [ ! -f "$setup.sig" ]; then
+            echo "::error::tauri signer sign did not write $setup.sig"
+            exit 1
+          fi
+
+          VERSION="$ver" SIG_FILE="$setup.sig" node -e '
+          const fs = require("fs");
+          const version = process.env.VERSION;
+          const signature = fs.readFileSync(process.env.SIG_FILE, "utf8").trim();
+          const file = "Brickman Torrent_" + version + "_x64-setup.exe";
+          const manifest = {
+            version,
+            pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+            platforms: {
+              "windows-x86_64": {
+                signature,
+                url:
+                  "https://github.com/brickman1/brickman-torrent/releases/download/v" +
+                  version +
+                  "/" +
+                  encodeURIComponent(file),
+              },
+            },
+          };
+          fs.writeFileSync("release-artifacts/latest.json", JSON.stringify(manifest, null, 2) + "\n");
+          console.log(fs.readFileSync("release-artifacts/latest.json", "utf8"));
+          '
+
+      # Upload-only (`gh release upload`): the release notes written above stay
+      # as they are, only the two updater files are added to the release.
+      - name: Upload updater files to the release
+        if: steps.updater.outputs.enabled == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          gh release upload "$GITHUB_REF_NAME" \
+            "release-artifacts/Brickman Torrent_${ver}_x64-setup.exe.sig" \
+            release-artifacts/latest.json \
+            --clobber
+

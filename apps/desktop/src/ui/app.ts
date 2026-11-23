@@ -33,7 +33,7 @@ import { attachTorrentDrop, type DroppedTorrent } from './drop-target';
 import { errorText } from './folder-field';
 import { icon, type IconName } from './icons';
 import { showContextMenu, type MenuItem } from './menu';
-import { openModal } from './modal';
+import { openModal, type ModalButton } from './modal';
 import { buildSettingsForm } from './settings-dialog';
 import {
   COLUMNS,
@@ -154,6 +154,8 @@ export class App {
 
   private updateState: 'idle' | 'checking' | 'available' | 'uptodate' = 'idle';
   private updateInfo: UpdateInfo | null = null;
+  /** In-app install is possible (the updater has the release signing key). */
+  private updaterReady = false;
   private notice: { text: string; until: number } | null = null;
   /** "Power off when downloads finish" countdown, polled with the torrents. */
   private powerStatus: PowerStatus | null = null;
@@ -1568,6 +1570,7 @@ export class App {
       this.updateInfo = info;
       if (info.available) {
         this.updateState = 'available';
+        this.updaterReady = await this.updaterAvailable();
         if (!silent) this.openUpdateDialog();
       } else {
         this.updateState = 'uptodate';
@@ -1585,6 +1588,22 @@ export class App {
     this.updateUpdateButton();
   }
 
+  /**
+   * In-app install needs the updater and the release signing key. Without a key
+   * (`pubkey` empty in tauri.conf.json) the dialog only offers the release page,
+   * which is exactly what it did before the updater existed.
+   */
+  private async updaterAvailable(): Promise<boolean> {
+    const ready = this.provider.updaterReady;
+    if (!ready || !this.provider.installUpdate) return false;
+    try {
+      return await ready.call(this.provider);
+    } catch (err) {
+      console.warn('[brickman-torrent] cannot query the updater state', err);
+      return false;
+    }
+  }
+
   private openUpdateDialog(): void {
     const info = this.updateInfo;
     if (!info || !info.available || !info.version) return;
@@ -1594,6 +1613,26 @@ export class App {
       { class: 'update-changelog' },
       ...info.changelog.map((line) => el('li', { text: t(line) })),
     );
+    // Progress and the result of the install land here; the buttons stay put.
+    const status = el('div', { class: 'update-progress', role: 'status' });
+
+    const buttons: ModalButton[] = [{ label: t('update.later') }];
+    if (this.updaterReady) {
+      buttons.push({
+        label: t('update.install'),
+        primary: true,
+        onClick: () => this.installUpdate(info, status),
+      });
+    } else {
+      buttons.push({
+        label: t('update.download'),
+        primary: true,
+        onClick: () => {
+          if (info.url) void this.provider.openExternal(info.url);
+          this.toast(t('update.downloadStub'));
+        },
+      });
+    }
 
     openModal({
       title: t('update.title'),
@@ -1612,20 +1651,46 @@ export class App {
         ),
         el('div', { class: 'update-section', text: t('update.changelog') }),
         changelog,
-        el('div', { class: 'update-note', text: t('update.downloadHint') }),
+        el('div', {
+          class: 'update-note',
+          text: t(this.updaterReady ? 'update.autoHint' : 'update.downloadHint'),
+        }),
+        status,
       ),
-      buttons: [
-        { label: t('update.later') },
-        {
-          label: t('update.download'),
-          primary: true,
-          onClick: () => {
-            if (info.url) void this.provider.openExternal(info.url);
-            this.toast(t('update.downloadStub'));
-          },
-        },
-      ],
+      buttons,
     });
+  }
+
+  /**
+   * Downloads and installs the update. Any failure - no key, no `latest.json`
+   * yet, a rejected signature, a network error - falls back to the release page
+   * instead of leaving the user with a dead button.
+   */
+  private async installUpdate(info: UpdateInfo, status: HTMLElement): Promise<boolean> {
+    const install = this.provider.installUpdate;
+    if (!install) {
+      if (info.url) void this.provider.openExternal(info.url);
+      return false;
+    }
+
+    status.textContent = t('update.downloadProgress', { percent: 0 });
+    try {
+      await install.call(this.provider, (percent) => {
+        status.textContent =
+          percent >= 100
+            ? t('update.installing')
+            : t('update.downloadProgress', { percent });
+      });
+      // Reaching this line means the app did not restart by itself.
+      status.textContent = t('update.restarting');
+    } catch (err) {
+      console.error('[brickman-torrent] in-app update failed', err);
+      status.textContent = t('update.installFailed');
+      this.toast(t('update.installFailed'));
+      if (info.url) void this.provider.openExternal(info.url);
+    }
+    // A restart or the browser is the actual result, not closing the dialog.
+    return false;
   }
 
   private setNotice(text: string, durationMs: number): void {

@@ -82,6 +82,17 @@ export interface TorrentProvider {
   peers(id: string): Promise<PeerInfo[]>;
 
   checkForUpdates(): Promise<UpdateInfo>;
+  /**
+   * Whether in-app updates can be installed: the updater plugin is compiled in,
+   * but it needs the release signing key. `false` (or a missing method, as in
+   * the mock provider) means the dialog only offers the release page.
+   */
+  updaterReady?(): Promise<boolean>;
+  /**
+   * Downloads and installs the update, reporting progress as a percentage
+   * (`0`–`100`). The app restarts when the install is done.
+   */
+  installUpdate?(onProgress: (percent: number) => void): Promise<void>;
   openExternal(url: string): Promise<void>;
 
   /**

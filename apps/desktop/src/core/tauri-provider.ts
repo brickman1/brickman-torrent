@@ -26,6 +26,8 @@ type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
 
 /** Event the Rust side uses to hand a link or a `.torrent` file to the window. */
 const LINK_EVENT = 'link-received';
+/** A release bundle is tens of megabytes; the update download must not give up early. */
+const UPDATE_DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 
 export interface TauriProviderOptions {
   /** Download folder from the UI settings; empty = system default. */
@@ -121,6 +123,41 @@ export async function createTauriProvider(
     peers: (id) => call<PeerInfo[]>('list_peers', { id }),
 
     checkForUpdates: () => call<UpdateInfo>('check_for_updates'),
+    updaterReady: () => call<boolean>('updater_enabled'),
+    /**
+     * In-app update: `check()` reads the release `latest.json`, the signature is
+     * verified against `plugins.updater.pubkey` and the NSIS setup is launched
+     * on Windows (it restarts the new version itself). An empty key, a missing
+     * `latest.json` or a rejected signature all reject, and the dialog falls
+     * back to opening the release page.
+     */
+    installUpdate: async (onProgress) => {
+      const { check } = await import('@tauri-apps/plugin-updater');
+      const update = await check();
+      if (!update) throw new Error('no update available');
+
+      let total = 0;
+      let received = 0;
+      await update.downloadAndInstall(
+        (event) => {
+          if (event.event === 'Started') {
+            total = event.data.contentLength ?? 0;
+            received = 0;
+            onProgress(0);
+          } else if (event.event === 'Progress') {
+            received += event.data.chunkLength;
+            // Stop at 99 %: the last percent is "installing", not "downloading".
+            if (total > 0) onProgress(Math.min(99, Math.floor((received / total) * 100)));
+          } else {
+            onProgress(100);
+          }
+        },
+        { timeout: UPDATE_DOWNLOAD_TIMEOUT_MS },
+      );
+      // On Windows the installer is already relaunching the app; elsewhere the
+      // fresh binary only starts after a restart of this process.
+      await call<void>('restart_app');
+    },
 
     powerStatus: () => call<PowerStatus>('get_power_status'),
     setPowerSettings: (settings: PowerSettings) =>

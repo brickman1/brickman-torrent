@@ -1353,6 +1353,29 @@ async fn check_for_updates() -> Result<UpdateDto, String> {
     .await
 }
 
+/// Whether in-app updates are configured: the updater plugin can only verify a
+/// downloaded bundle with the public key that matches its signature. The key
+/// lives in `plugins.updater.pubkey` (see docs/UPDATER.md); while it is empty
+/// the UI keeps the "open the release page" path instead of trying to install.
+#[tauri::command]
+fn updater_enabled(app: AppHandle) -> bool {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|config| config.get("pubkey"))
+        .and_then(|pubkey| pubkey.as_str())
+        .is_some_and(|pubkey| !pubkey.trim().is_empty())
+}
+
+/// Restarts the app after an update was installed. On Windows the NSIS setup
+/// does that itself, so this is only the fall-back for other platforms and for
+/// an install that finished without restarting.
+#[tauri::command]
+fn restart_app(app: AppHandle) {
+    app.restart();
+}
+
 fn changelog_lines(body: &str) -> Vec<String> {
     body.lines()
         .map(|line| line.trim())
@@ -1699,6 +1722,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        // In-app updates (download and install). The plugin reads its endpoint
+        // and public key from `plugins.updater` in tauri.conf.json; with an
+        // empty key `check()` fails and the UI keeps the release-page path, so
+        // a build without a signing key works exactly as before.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // A tray that cannot be created is not fatal: the window keeps
             // working, only the tray menu is missing.
@@ -1761,6 +1789,8 @@ pub fn run() {
             list_trackers,
             list_peers,
             check_for_updates,
+            updater_enabled,
+            restart_app,
             open_external,
             open_default_apps,
             read_clipboard,

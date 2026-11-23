@@ -1581,6 +1581,17 @@ body.col-resizing * {
   font-size: 10px;
 }
 
+/* Download progress and the result of an in-app install; empty until needed. */
+.update-progress {
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.update-progress:empty {
+  display: none;
+}
+
 /* ----------------------------------------------------------------- toast */
 
 .toast {

@@ -538,14 +538,14 @@ dependencies = [
 
 [[package]]
 name = "brickman-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brickman-core",
 ]
 
 [[package]]
 name = "brickman-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -559,7 +559,7 @@ dependencies = [
 
 [[package]]
 name = "brickman-desktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arboard",
  "brickman-core",

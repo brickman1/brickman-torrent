@@ -17,19 +17,32 @@ use brickman_core::{
     default_download_dir, normalize_peer_limit, now_ms,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 mod handler;
 mod launch;
 mod power;
+mod settings_store;
 
 /// Event that carries a `magnet:` link or a `.torrent` file to the window.
 const LINK_EVENT: &str = "link-received";
 /// Upper bound of the clipboard text handed to the UI: a magnet link is well
 /// under 1 KiB, and a pasted document must not travel to the frontend.
 const CLIPBOARD_LIMIT: usize = 8 * 1024;
+
+/// Event that tells the window what the tray menu asked for; the payload is the
+/// action, currently only `pause-all`.
+const TRAY_ACTION_EVENT: &str = "tray-action";
+/// Ids of the tray menu items. The frontend renames the items for its language,
+/// so the ids, not the texts, say which item was clicked.
+const TRAY_SHOW_ID: &str = "tray-show";
+const TRAY_PAUSE_ID: &str = "tray-pause";
+const TRAY_QUIT_ID: &str = "tray-quit";
 
 /// Sub folder of the data folder where a `.torrent` dropped on the window is
 /// staged: the webview hides the real path of a dropped file, so the frontend
@@ -1519,6 +1532,133 @@ fn cancel_power_off(state: State<'_, AppState>) -> Result<power::PowerStatusDto,
     Ok(state.power.status())
 }
 
+// ---------------------------------------------------------- tray & window
+
+/// Handles of the tray menu items: `set_tray_labels` renames them when the UI
+/// language changes.
+struct TrayMenu {
+    show: MenuItem<tauri::Wry>,
+    pause: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
+}
+
+/// Brings the main window up: while "close to tray" is on the window is only
+/// hidden, so it has to be unminimized before it is shown.
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// Creates the tray icon and its menu. The icon is owned by the app, so the
+/// handle `build` returns is dropped on purpose: the icon stays while the app
+/// runs.
+fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, TRAY_SHOW_ID, "Show", true, None::<&str>)?;
+    let pause = MenuItem::with_id(app, TRAY_PAUSE_ID, "Pause all", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, TRAY_QUIT_ID, "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &pause, &quit])?;
+
+    let mut builder = TrayIconBuilder::new()
+        .tooltip("Brickman Torrent")
+        .menu(&menu)
+        // The left button belongs to "show the window"; the menu opens on the
+        // right button.
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_SHOW_ID => show_main_window(app),
+            TRAY_PAUSE_ID => {
+                if let Err(error) = app.emit(TRAY_ACTION_EVENT, "pause-all") {
+                    eprintln!("[brickman-torrent] cannot send {TRAY_ACTION_EVENT}: {error}");
+                }
+            }
+            TRAY_QUIT_ID => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+
+    app.manage(TrayMenu { show, pause, quit });
+    Ok(())
+}
+
+// ----------------------------------------------------- settings & autostart
+
+/// The UI settings, `None` while the file does not exist yet.
+#[tauri::command]
+fn load_settings() -> Result<Option<serde_json::Value>, String> {
+    settings_store::load(&default_data_dir())
+}
+
+/// Replaces the whole settings document; the frontend owns its fields.
+#[tauri::command]
+fn save_settings(settings: serde_json::Value) -> Result<(), String> {
+    settings_store::save(&default_data_dir(), &settings)
+}
+
+/// Whether closing the window hides it to the tray instead of quitting. The
+/// window event of the same name reads the value this command stores.
+#[tauri::command]
+fn set_close_to_tray(
+    enabled: bool,
+    close_to_tray: State<'_, Arc<AtomicBool>>,
+) -> Result<(), String> {
+    close_to_tray.store(enabled, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Whether the app is started with the system.
+#[tauri::command]
+fn get_autostart(app: AppHandle) -> Result<bool, String> {
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|error| error.to_string())
+}
+
+/// Adds or removes the app from the programs the system starts at login.
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let autolaunch = app.autolaunch();
+    let result = if enabled {
+        autolaunch.enable()
+    } else {
+        autolaunch.disable()
+    };
+    result.map_err(|error| error.to_string())
+}
+
+/// Renames the tray menu items: the UI passes the texts of its language.
+#[tauri::command]
+fn set_tray_labels(
+    show: String,
+    pause: String,
+    quit: String,
+    app: AppHandle,
+) -> Result<(), String> {
+    let menu = app
+        .try_state::<TrayMenu>()
+        .ok_or("the tray icon is not created")?;
+    for (item, text) in [(&menu.show, show), (&menu.pause, pause), (&menu.quit, quit)] {
+        item.set_text(text)
+            .map_err(|error| format!("cannot rename a tray item: {error}"))?;
+    }
+    Ok(())
+}
+
 // -------------------------------------------------------------------- entry
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1548,15 +1688,39 @@ pub fn run() {
                 deliver_link(app, &target);
             }
             // The link lands in the window of the running app: bring it up.
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            show_main_window(app);
         }))
+        // "Start with Windows" of the settings dialog: an HKCU `Run` value, no
+        // admin rights needed.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            // A tray that cannot be created is not fatal: the window keeps
+            // working, only the tray menu is missing.
+            if let Err(error) = setup_tray(app.handle()) {
+                eprintln!("[brickman-torrent] cannot create the tray icon: {error}");
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            let WindowEvent::CloseRequested { api, .. } = event else {
+                return;
+            };
+            if window.label() != "main" {
+                return;
+            }
+            // With "close to tray" on, closing the window only hides it: the
+            // downloads keep running and the tray brings the window back.
+            if window.state::<Arc<AtomicBool>>().load(Ordering::Relaxed) {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .manage(AppState {
             engine: tokio::sync::Mutex::new(None),
             engine_ready: AtomicBool::new(false),
@@ -1564,6 +1728,9 @@ pub fn run() {
             pending: Mutex::new(pending),
             power: Arc::new(power::PowerState::new(&default_data_dir())),
         })
+        // Whether the window hides to the tray on close; `set_close_to_tray`
+        // changes it at runtime, the default is on.
+        .manage(Arc::new(AtomicBool::new(true)))
         .invoke_handler(tauri::generate_handler![
             engine_init,
             set_download_dir,
@@ -1603,6 +1770,12 @@ pub fn run() {
             get_power_status,
             set_power_settings,
             cancel_power_off,
+            load_settings,
+            save_settings,
+            set_close_to_tray,
+            get_autostart,
+            set_autostart,
+            set_tray_labels,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the tauri application");

@@ -38,6 +38,17 @@ export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+/**
+ * The settings store, read before the engine exists: `engine_init` takes the
+ * download folder and the listener options (UPnP, uTP) at creation, so they
+ * have to be known first. A store that is empty or unreadable answers `null`.
+ */
+export async function readStoredSettings(): Promise<unknown | null> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  const stored = await (invoke as Invoke)<unknown | null>('load_settings');
+  return stored ?? null;
+}
+
 export async function createTauriProvider(
   options: TauriProviderOptions = {},
 ): Promise<TorrentProvider> {
@@ -127,6 +138,13 @@ export async function createTauriProvider(
     handlerRegister: () => call<HandlerStatus>('handler_register'),
     handlerUnregister: () => call<HandlerStatus>('handler_unregister'),
     openDefaultApps: () => call<void>('open_default_apps'),
+
+    settingsRead: () => call<unknown | null>('load_settings'),
+    settingsWrite: (settings) => call<void>('save_settings', { settings }),
+    setCloseToTray: (enabled) => call<void>('set_close_to_tray', { enabled }),
+    getAutostart: () => call<boolean>('get_autostart'),
+    setAutostart: (enabled) => call<void>('set_autostart', { enabled }),
+    setTrayLabels: (show, pause, quit) => call<void>('set_tray_labels', { show, pause, quit }),
 
     readClipboard: () => call<string | null>('read_clipboard'),
 

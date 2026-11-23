@@ -218,6 +218,11 @@ export interface AppSettings {
   /** System notification when a download reaches 100 % (default on). */
   notifyOnComplete: boolean;
   /**
+   * The window button hides the window into the tray instead of quitting, so
+   * the downloads keep running (default on; "Quit" lives in the tray menu).
+   */
+  closeToTray: boolean;
+  /**
    * Folders used recently for adding, newest first (at most
    * {@link RECENT_FOLDERS_LIMIT}). The first entry is also "the folder last
    * used", so it survives a restart with the rest of the settings.
@@ -299,6 +304,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   onDownloadsComplete: 'nothing',
   powerDelaySecs: POWER_DELAY_DEFAULT,
   notifyOnComplete: true,
+  closeToTray: true,
   recentFolders: [],
   columnWidths: {},
   upnpEnabled: true,

@@ -16,7 +16,7 @@ import {
 } from '../core/types';
 import { LOCALES, LOCALE_NAMES, isLocale, t } from '../i18n';
 import { el } from './dom';
-import { buildFolderField } from './folder-field';
+import { buildFolderField, errorText } from './folder-field';
 import { buildLinksSection } from './links-section';
 
 export interface SettingsFormOptions {
@@ -79,6 +79,41 @@ export function buildSettingsForm(
   const checkUpdates = checkbox(settings.checkUpdatesOnStartup);
   const createSubfolder = checkbox(settings.createSubfolderDefault);
   const notifyOnComplete = checkbox(settings.notifyOnComplete);
+  const closeToTray = checkbox(settings.closeToTray);
+
+  // "Launch at login" is a shell setting, not a part of `AppSettings`: it is
+  // read and written at once, outside the "Apply" button.
+  const autostart = checkbox(false);
+  const autostartHint = el('p', { class: 'hint field-warning autostart-hint', hidden: true });
+  const showAutostartError = (err: unknown): void => {
+    autostartHint.hidden = false;
+    autostartHint.textContent = `${t('settings.autostartError')} ${errorText(err)}`;
+  };
+  const getAutostart = options.provider.getAutostart;
+  if (getAutostart) {
+    void getAutostart
+      .call(options.provider)
+      .then((enabled) => {
+        autostart.checked = enabled;
+      })
+      .catch((err: unknown) => {
+        autostart.disabled = true;
+        showAutostartError(err);
+      });
+  } else {
+    autostart.disabled = true;
+  }
+  autostart.addEventListener('change', () => {
+    const setAutostart = options.provider.setAutostart;
+    if (!setAutostart) return;
+    autostartHint.hidden = true;
+    const enabled = autostart.checked;
+    void setAutostart.call(options.provider, enabled).catch((err: unknown) => {
+      // The switch did not stick: show the state it still has, and why.
+      autostart.checked = !enabled;
+      showAutostartError(err);
+    });
+  });
 
   // Empty = the system default (Downloads); the Rust side resolves it.
   const folder = buildFolderField({
@@ -327,6 +362,22 @@ export function buildSettingsForm(
       : el('p', { class: 'hint', text: t('settings.linksUnavailable') }),
 
     el('div', { class: 'settings-section', text: t('settings.sectionAppearance') }),
+    // Window and startup behavior: the dialog has no section of their own.
+    el(
+      'label',
+      { class: 'check-row' },
+      closeToTray,
+      el('span', { text: t('settings.closeToTray') }),
+    ),
+    el('p', { class: 'hint', text: t('settings.closeToTrayHint') }),
+    el(
+      'label',
+      { class: 'check-row' },
+      autostart,
+      el('span', { text: t('settings.autostart') }),
+    ),
+    el('p', { class: 'hint', text: t('settings.autostartHint') }),
+    autostartHint,
     field(t('settings.theme'), theme),
     field(t('settings.language'), language),
     el('div', { class: 'settings-version', text: t('settings.version', { version: options.version }) }),
@@ -351,6 +402,7 @@ export function buildSettingsForm(
       onDownloadsComplete: normalizePowerAction(powerAction.value),
       powerDelaySecs: normalizePowerDelay(powerDelay.value),
       notifyOnComplete: notifyOnComplete.checked,
+      closeToTray: closeToTray.checked,
       recentFolders,
       // Not edited here: kept so applying the dialog does not lose the drag.
       columnWidths: settings.columnWidths,

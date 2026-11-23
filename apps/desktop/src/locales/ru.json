@@ -10,6 +10,9 @@
   "toolbar.language": "Язык",
   "toolbar.darkTheme": "Тёмная тема",
   "toolbar.lightTheme": "Светлая тема",
+  "tray.show": "Открыть Brickman Torrent",
+  "tray.pauseAll": "Пауза для всех",
+  "tray.quit": "Выход",
 
   "sidebar.all": "Все",
   "sidebar.downloading": "Загружается",
@@ -214,6 +217,11 @@
   "settings.language": "Язык",
   "settings.light": "Светлая",
   "settings.dark": "Тёмная",
+  "settings.closeToTray": "Сворачивать в трей",
+  "settings.closeToTrayHint": "После закрытия окна загрузки продолжаются; выход — из меню трея.",
+  "settings.autostart": "Запускать при входе",
+  "settings.autostartHint": "Запускать Brickman Torrent при входе в Windows.",
+  "settings.autostartError": "Не удалось изменить автозапуск:",
   "settings.version": "Версия {version}",
 
   "update.title": "Обновление",

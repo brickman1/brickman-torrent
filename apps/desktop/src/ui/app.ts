@@ -170,6 +170,7 @@ export class App {
   async init(): Promise<void> {
     applyTheme(this.settings.theme);
     setLocale(this.settings.locale);
+    this.pushCloseToTray(this.settings.closeToTray);
     this.provider.connect?.();
     this.systemDownloadDir = await this.resolveSystemDownloadDir();
 
@@ -710,7 +711,7 @@ export class App {
   /** The user dragged a divider: remember the widths with the rest of the settings. */
   private saveColumnWidths(widths: ColumnWidths): void {
     this.settings = { ...this.settings, columnWidths: widths };
-    saveSettings(this.settings);
+    void saveSettings(this.provider, this.settings);
   }
 
   /** "Reset column widths" in the header context menu. */
@@ -1027,6 +1028,22 @@ export class App {
   }
 
   /**
+   * "Pause all" of the tray menu: every torrent that is downloading or waiting
+   * in the queue stops; seeding and finished ones are left alone.
+   */
+  async pauseAll(): Promise<void> {
+    const ids = this.state.torrents
+      .filter((torrent) => {
+        const status = effectiveStatus(torrent);
+        return status === 'downloading' || status === 'queued';
+      })
+      .map((torrent) => torrent.id);
+    if (ids.length === 0) return;
+    await this.provider.pause(ids);
+    await this.refresh();
+  }
+
+  /**
    * Reorders the queue: `index` is a zero-based position (drag and drop, or
    * "move to position" with the number converted by the caller). The core
    * applies the new order at once, so a different torrent may start now.
@@ -1217,7 +1234,7 @@ export class App {
       next = { ...next, downloadDir: request.outputDir };
     }
     this.settings = next;
-    saveSettings(next);
+    void saveSettings(this.provider, next);
 
     if (next.downloadDir !== previousDir && next.downloadDir) {
       void this.provider
@@ -1473,10 +1490,14 @@ export class App {
     const localeChanged = next.locale !== this.settings.locale;
     const themeChanged = next.theme !== this.settings.theme;
     this.settings = next;
-    saveSettings(next);
+    void saveSettings(this.provider, next);
+    this.pushCloseToTray(next.closeToTray);
 
     if (themeChanged) applyTheme(next.theme);
-    if (localeChanged) setLocale(next.locale);
+    if (localeChanged) {
+      setLocale(next.locale);
+      this.updateTrayLabels();
+    }
 
     await Promise.all([
       this.provider.setMaxActive(next.maxActive),
@@ -1498,8 +1519,9 @@ export class App {
   private changeLocale(locale: AppSettings['locale']): void {
     if (locale === this.settings.locale) return;
     this.settings = { ...this.settings, locale };
-    saveSettings(this.settings);
+    void saveSettings(this.provider, this.settings);
     setLocale(locale);
+    this.updateTrayLabels();
     this.buildShell();
     this.render(true);
     if (this.settings.locale !== getLocale()) {
@@ -1510,9 +1532,27 @@ export class App {
   private toggleTheme(): void {
     const theme: AppSettings['theme'] = this.settings.theme === 'light' ? 'dark' : 'light';
     this.settings = { ...this.settings, theme };
-    saveSettings(this.settings);
+    void saveSettings(this.provider, this.settings);
     applyTheme(theme);
     this.updateThemeButton();
+  }
+
+  /** Tray menu texts follow the UI language (the tray itself lives in Rust). */
+  private updateTrayLabels(): void {
+    const setLabels = this.provider.setTrayLabels;
+    if (!setLabels) return;
+    void setLabels
+      .call(this.provider, t('tray.show'), t('tray.pauseAll'), t('tray.quit'))
+      .catch((err: unknown) => console.warn('[brickman-torrent] cannot set the tray labels', err));
+  }
+
+  /** Whether closing the window hides it into the tray (a shell setting). */
+  private pushCloseToTray(enabled: boolean): void {
+    const apply = this.provider.setCloseToTray;
+    if (!apply) return;
+    void apply
+      .call(this.provider, enabled)
+      .catch((err: unknown) => console.warn('[brickman-torrent] cannot set close to tray', err));
   }
 
   // ---------------------------------------------------------------- updates

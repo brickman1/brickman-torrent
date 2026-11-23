@@ -96,6 +96,21 @@ export interface TorrentProvider {
   /** Opens the Windows "Default apps" page, the fallback when the switch does not stick. */
   openDefaultApps?(): Promise<void>;
 
+  /**
+   * The settings store of the shell (`load_settings` / `save_settings`): on the
+   * desktop it is a file the Rust side owns, in a plain browser it is
+   * `localStorage`. A store that has nothing yet answers `null`.
+   */
+  settingsRead?(): Promise<unknown | null>;
+  settingsWrite?(settings: unknown): Promise<void>;
+  /** The window button hides into the tray instead of quitting. */
+  setCloseToTray?(enabled: boolean): Promise<void>;
+  /** "Launch at login" is a shell setting, not a part of `AppSettings`. */
+  getAutostart?(): Promise<boolean>;
+  setAutostart?(enabled: boolean): Promise<void>;
+  /** Tray menu texts follow the UI language. */
+  setTrayLabels?(show: string, pause: string, quit: string): Promise<void>;
+
   /** Text from the clipboard, for Ctrl+V of a magnet link. */
   readClipboard?(): Promise<string | null>;
   /**

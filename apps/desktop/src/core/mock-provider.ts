@@ -51,6 +51,9 @@ const AVAILABLE_DRIVES = ['C', 'D', 'E'];
 /** Where the mock keeps the handler registration between reloads. */
 const HANDLER_STORAGE_KEY = 'brickman-torrent.handler.v1';
 
+/** Settings of the browser mock: the same key the UI used before the store. */
+const SETTINGS_STORAGE_KEY = 'brickman-torrent.settings.v1';
+
 /** The registration the mock pretends the registry holds. */
 interface MockHandlerState {
   registered: boolean;
@@ -451,6 +454,39 @@ export class MockProvider implements TorrentProvider {
   async openDefaultApps(): Promise<void> {
     console.info('[brickman-torrent][mock] would open ms-settings:defaultapps');
   }
+
+  // -------------------------------------------------------------- settings
+
+  /** The browser keeps the settings where the UI used to: `localStorage`. */
+  async settingsRead(): Promise<unknown | null> {
+    try {
+      const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+      return raw ? (JSON.parse(raw) as unknown) : null;
+    } catch (err) {
+      console.warn('[brickman-torrent][mock] cannot read the settings', err);
+      return null;
+    }
+  }
+
+  async settingsWrite(settings: unknown): Promise<void> {
+    try {
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    } catch (err) {
+      console.warn('[brickman-torrent][mock] cannot store the settings', err);
+    }
+  }
+
+  /** The window and the tray belong to the desktop shell: nothing to do here. */
+  async setCloseToTray(_enabled: boolean): Promise<void> {}
+
+  /** A browser tab is never launched at login. */
+  async getAutostart(): Promise<boolean> {
+    return false;
+  }
+
+  async setAutostart(_enabled: boolean): Promise<void> {}
+
+  async setTrayLabels(_show: string, _pause: string, _quit: string): Promise<void> {}
 
   /** The browser cannot read the real clipboard: the test sets the text. */
   async readClipboard(): Promise<string | null> {

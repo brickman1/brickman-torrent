@@ -10,6 +10,9 @@
   "toolbar.language": "Language",
   "toolbar.darkTheme": "Switch to dark theme",
   "toolbar.lightTheme": "Switch to light theme",
+  "tray.show": "Show Brickman Torrent",
+  "tray.pauseAll": "Pause all",
+  "tray.quit": "Quit",
 
   "sidebar.all": "All",
   "sidebar.downloading": "Downloading",
@@ -214,6 +217,11 @@
   "settings.language": "Language",
   "settings.light": "Light",
   "settings.dark": "Dark",
+  "settings.closeToTray": "Close to tray",
+  "settings.closeToTrayHint": "Closing the window keeps the downloads running; quit from the tray menu.",
+  "settings.autostart": "Launch at login",
+  "settings.autostartHint": "Start Brickman Torrent when you sign in to Windows.",
+  "settings.autostartError": "Cannot change the launch at login setting:",
   "settings.version": "Version {version}",
 
   "update.title": "Software update",

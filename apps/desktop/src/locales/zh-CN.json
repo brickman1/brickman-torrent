@@ -10,6 +10,9 @@
   "toolbar.language": "语言",
   "toolbar.darkTheme": "切换到深色主题",
   "toolbar.lightTheme": "切换到浅色主题",
+  "tray.show": "显示 Brickman Torrent",
+  "tray.pauseAll": "全部暂停",
+  "tray.quit": "退出",
 
   "sidebar.all": "全部",
   "sidebar.downloading": "下载中",
@@ -214,6 +217,11 @@
   "settings.language": "语言",
   "settings.light": "浅色",
   "settings.dark": "深色",
+  "settings.closeToTray": "关闭时最小化到托盘",
+  "settings.closeToTrayHint": "关闭窗口后下载继续进行；退出请使用托盘菜单。",
+  "settings.autostart": "开机启动",
+  "settings.autostartHint": "登录 Windows 时启动 Brickman Torrent。",
+  "settings.autostartError": "无法更改开机启动设置：",
   "settings.version": "版本 {version}",
 
   "update.title": "软件更新",

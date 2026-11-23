@@ -10,6 +10,9 @@
   "toolbar.language": "Dil",
   "toolbar.darkTheme": "Koyu temaya geç",
   "toolbar.lightTheme": "Açık temaya geç",
+  "tray.show": "Brickman Torrent'i göster",
+  "tray.pauseAll": "Tümünü duraklat",
+  "tray.quit": "Çıkış",
 
   "sidebar.all": "Tümü",
   "sidebar.downloading": "İndiriliyor",
@@ -214,6 +217,11 @@
   "settings.language": "Dil",
   "settings.light": "Açık",
   "settings.dark": "Koyu",
+  "settings.closeToTray": "Sistem tepsisine küçült",
+  "settings.closeToTrayHint": "Pencere kapatıldığında indirmeler sürer; çıkmak için tepsi menüsünü kullanın.",
+  "settings.autostart": "Oturum açılışında başlat",
+  "settings.autostartHint": "Windows oturumu açıldığında Brickman Torrent başlar.",
+  "settings.autostartError": "Oturum açılışında başlatma değiştirilemedi:",
   "settings.version": "Sürüm {version}",
 
   "update.title": "Yazılım güncellemesi",

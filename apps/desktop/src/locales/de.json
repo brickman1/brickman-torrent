@@ -10,6 +10,9 @@
   "toolbar.language": "Sprache",
   "toolbar.darkTheme": "Zum dunklen Design wechseln",
   "toolbar.lightTheme": "Zum hellen Design wechseln",
+  "tray.show": "Brickman Torrent anzeigen",
+  "tray.pauseAll": "Alle anhalten",
+  "tray.quit": "Beenden",
 
   "sidebar.all": "Alle",
   "sidebar.downloading": "Wird geladen",
@@ -214,6 +217,11 @@
   "settings.language": "Sprache",
   "settings.light": "Hell",
   "settings.dark": "Dunkel",
+  "settings.closeToTray": "In den Infobereich schließen",
+  "settings.closeToTrayHint": "Downloads laufen beim Schließen des Fensters weiter; Beenden über das Menü im Infobereich.",
+  "settings.autostart": "Beim Anmelden starten",
+  "settings.autostartHint": "Startet Brickman Torrent bei der Windows-Anmeldung.",
+  "settings.autostartError": "Autostart konnte nicht geändert werden:",
   "settings.version": "Version {version}",
 
   "update.title": "Software-Update",

@@ -10,6 +10,9 @@
   "toolbar.language": "Langue",
   "toolbar.darkTheme": "Passer au thème sombre",
   "toolbar.lightTheme": "Passer au thème clair",
+  "tray.show": "Afficher Brickman Torrent",
+  "tray.pauseAll": "Tout mettre en pause",
+  "tray.quit": "Quitter",
 
   "sidebar.all": "Tous",
   "sidebar.downloading": "En téléchargement",
@@ -214,6 +217,11 @@
   "settings.language": "Langue",
   "settings.light": "Clair",
   "settings.dark": "Sombre",
+  "settings.closeToTray": "Fermer dans la zone de notification",
+  "settings.closeToTrayHint": "Les téléchargements continuent après la fermeture de la fenêtre ; pour quitter, utilisez le menu de la zone de notification.",
+  "settings.autostart": "Lancer à l'ouverture de session",
+  "settings.autostartHint": "Démarre Brickman Torrent à l'ouverture de votre session Windows.",
+  "settings.autostartError": "Impossible de modifier le lancement automatique :",
   "settings.version": "Version {version}",
 
   "update.title": "Mise à jour logicielle",

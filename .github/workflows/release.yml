@@ -208,7 +208,7 @@ jobs:
           const fs = require("fs");
           const version = process.env.VERSION;
           const signature = fs.readFileSync(process.env.SIG_FILE, "utf8").trim();
-          const file = "Brickman Torrent_" + version + "_x64-setup.exe";
+          const file = "Brickman.Torrent_" + version + "_x64-setup.exe"; // GitHub stores the asset with the space as a dot
           const manifest = {
             version,
             pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
@@ -219,7 +219,7 @@ jobs:
                   "https://github.com/brickman1/brickman-torrent/releases/download/v" +
                   version +
                   "/" +
-                  encodeURIComponent(file),
+                  file,
               },
             },
           };

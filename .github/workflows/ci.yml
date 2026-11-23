@@ -53,6 +53,57 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
+  build-test-linux:
+    name: Build, test (Linux)
+    # Linux is a shipped target and catches tray/autostart regressions Windows
+    # would hide: `tray-icon` links against AppIndicator, and the autostart
+    # plugin only builds against a real GTK/WebKit stack.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Official Tauri 2 prerequisites for Debian/Ubuntu. webkit2gtk 4.1 matches
+      # Tauri 2; libayatana-appindicator3-dev is required by `tray-icon`.
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      # Frontend first: the Tauri crate embeds apps/desktop/dist at compile time.
+      - name: Install frontend dependencies
+        run: npm --prefix apps/desktop ci
+
+      - name: Build frontend
+        run: npm --prefix apps/desktop run build
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build
+        run: cargo build
+
+      - name: cargo test
+        run: cargo test --workspace
+
   # The repo is not rustfmt-clean yet, so `cargo fmt --check` is intentionally
   # not gated here; add it once the tree is formatted.
   locales:

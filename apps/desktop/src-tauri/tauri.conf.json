@@ -34,7 +34,7 @@
       "endpoints": [
         "https://github.com/brickman1/brickman-torrent/releases/latest/download/latest.json"
       ],
-      "pubkey": ""
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY0MjM0MjNFNkU0NzQzREYKUldUZlEwZHVQa0lqOUY2WE1ZRjFqOFNvS2lYZVppNjdYa2d6Z1JKU3ZoakdjMXNLb3B2RHF5V3IK"
     }
   },
   "bundle": {

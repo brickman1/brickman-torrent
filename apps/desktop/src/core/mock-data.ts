@@ -29,8 +29,8 @@ const MB = 1024 * KB;
 const GB = 1024 * MB;
 const DAY = 86_400_000;
 
-export const MOCK_UPDATE_VERSION = '0.3.1';
-export const MOCK_UPDATE_URL = 'https://example.com/brickman-torrent/releases/0.3.1';
+export const MOCK_UPDATE_VERSION = '0.4.1';
+export const MOCK_UPDATE_URL = 'https://example.com/brickman-torrent/releases/0.4.1';
 export const MOCK_UPDATE_CHANGELOG = [
   'update.changelog.limits',
   'update.changelog.resume',

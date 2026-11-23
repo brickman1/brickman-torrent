@@ -254,7 +254,7 @@ await applySettings();
 await page.locator('.tb-btn[aria-label="Check for updates"]').click();
 await page.waitForTimeout(1400);
 const upToDateText = await statusText();
-check('manual check reports up to date', upToDateText.includes('latest version (0.3.0)'), upToDateText);
+check('manual check reports up to date', upToDateText.includes('latest version (0.4.0)'), upToDateText);
 
 await openSettings();
 await toggleMockUpdate(true);
@@ -262,7 +262,7 @@ await applySettings();
 await page.locator('.tb-btn[aria-label="Check for updates"]').click();
 await page.waitForTimeout(1400);
 const updateDialog = await page.locator('.modal').innerText().catch(() => '');
-check('update dialog opens with new version', updateDialog.includes('0.3.1') && /what's new/i.test(updateDialog), updateDialog.slice(0, 120));
+check('update dialog opens with new version', updateDialog.includes('0.4.1') && /what's new/i.test(updateDialog), updateDialog.slice(0, 120));
 check(
   'update dialog lists changelog',
   /what's new/i.test(updateDialog) && updateDialog.includes('Per-torrent bandwidth limits'),
@@ -270,7 +270,7 @@ check(
 await page.getByRole('button', { name: 'Later' }).click();
 await page.waitForTimeout(250);
 const availableText = await statusText();
-check('status bar shows available update', availableText.includes('Update 0.3.1 available'), availableText);
+check('status bar shows available update', availableText.includes('Update 0.4.1 available'), availableText);
 
 // --- settings: connections (UPnP, uTP, peer limit, extra trackers) -------
 const settingsSectionTitles = () =>

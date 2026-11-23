@@ -1,7 +1,7 @@
 {
   "name": "brickman-torrent",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "Desktop torrent client UI prototype (Tauri 2 + Vite, mock data provider)",
   "scripts": {

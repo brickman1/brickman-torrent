@@ -356,6 +356,11 @@ mod tests {
 
     #[test]
     fn rejects_a_folder_on_a_missing_drive() {
+        // Drive letters are a Windows concept; on other systems `Z:\nope` is
+        // just a relative name, so this check does not apply there.
+        if !cfg!(windows) {
+            return;
+        }
         // `Z:` is not mapped on the development machine; skip where it is.
         if Path::new(r"Z:\").exists() {
             return;
